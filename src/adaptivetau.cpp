@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 161 2010-10-19 16:38:26Z pjohnson $
+/* $Id: adaptivetau.cpp 162 2010-11-12 17:28:37Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -26,6 +26,7 @@
 #include <vector>
 #include <limits>
 #include <cassert>
+#include <cmath>
 
 #include <R.h>
 #include <Rdefines.h>
