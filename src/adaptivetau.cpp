@@ -895,7 +895,8 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                     x_UpdateRates();
                 }
                 x_SingleStepExact(tf);
-                if (isinf(*m_T)) { //signal that rates = 0
+                if (*m_T == numeric_limits<double>::infinity()) {
+                    //signal that rates = 0
                     *m_T = tf;
                 }
                 if (debug) {
