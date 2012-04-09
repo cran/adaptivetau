@@ -1,0 +1,61 @@
+\begin{thebibliography}{6}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Cao et~al.(2007)Cao, Gillespie, and Petzold]{CGP07}
+Y.~Cao, D.~T. Gillespie, and L.~R. Petzold.
+\newblock Adaptive explicit-implicit tau-leaping method with automatic tau
+  selection.
+\newblock \emph{J Chem Phys}, 126\penalty0 (22):\penalty0 224101, 2007.
+\newblock URL
+  \url{http://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?cmd=prlinks&dbf%
+rom=pubmed&retmode=ref&id=17581038}.
+
+\bibitem[Gillespie(1976)]{Gil76}
+Daniel~T. Gillespie.
+\newblock A general method for numerically simulating the stochastic time
+  evolution of coupled chemical reactions.
+\newblock \emph{J Comput Phys}, 22\penalty0 (4):\penalty0 403 -- 434, 1976.
+\newblock ISSN 0021-9991.
+\newblock \doi{DOI: 10.1016/0021-9991(76)90041-3}.
+\newblock URL
+  \url{http://www.sciencedirect.com/science/article/B6WHY-4DD1NC9-CP/2/43ade5f%
+11fb949602b3a2abdbbb29f0e}.
+
+\bibitem[Kimura(1957)]{Kim57}
+M.~Kimura.
+\newblock Some problems of stochastic processes in genetics.
+\newblock \emph{Ann Math Stat}, 28\penalty0 (4):\penalty0 882--901, 1957.
+
+\bibitem[Lloyd-Smith et~al.(2009)Lloyd-Smith, George, Pepin, Pitzer, Pulliam,
+  Dobson, Hudson, and Grenfell]{LGP+09}
+J.~O. Lloyd-Smith, D.~George, K.~M. Pepin, V.~E. Pitzer, J.~R. Pulliam, A.~P.
+  Dobson, P.~J. Hudson, and B.~T. Grenfell.
+\newblock Epidemic dynamics at the human-animal interface.
+\newblock \emph{Science}, 326\penalty0 (5958):\penalty0 1362--7, 2009.
+\newblock URL
+  \url{http://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?cmd=prlinks&dbf%
+rom=pubmed&retmode=ref&id=19965751}.
+
+\bibitem[Lotka(1920)]{Lot20}
+A.~J. Lotka.
+\newblock Analytical note on certain rhythmic relations in organic systems.
+\newblock \emph{Proc Natl Acad Sci U S A}, 6\penalty0 (7):\penalty0 410--5,
+  1920.
+\newblock URL
+  \url{http://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?cmd=prlinks&dbf%
+rom=pubmed&retmode=ref&id=16576509}.
+
+\bibitem[Pineda-Krch(2008)]{Pin08}
+Mario Pineda-Krch.
+\newblock Gillespie{SSA}: implementing the {G}illespie stochastic simulation
+  algorithm in {R}.
+\newblock \emph{Journal of Statistical Software}, 25\penalty0 (12):\penalty0
+  1--18, 4 2008.
+\newblock ISSN 1548-7660.
+\newblock URL \url{http://www.jstatsoft.org/v25/i12}.
+
+\end{thebibliography}

@@ -1,0 +1,32 @@
+------------------------
+Version 1.0 - 9 Apr 2012
+------------------------
+  - Fixed memory bug which could, under some circumstances, have lead
+    to segmentation fault from premature garbage collection.
+  - Fixed implementation of implicit tau-leaping algorithm (used when
+    Jacobian supplied & specified by adaptive tau algorithm) and
+    clarified corresponding documentation.
+  - Fixed error handling to free memory allocated in heap upon abort
+  - Added new entrypoint -- ssa.exact -- that directly runs the "exact"
+    simulation C++ function rather than the tau-leaping algorithm.
+  - Made algorithm more robust for deterministic transitions.
+  - Improved error messages when passed invalid initial conditions or
+    rate function.
+  - Byte-code compile user rate functions if compiler package is available.
+  - Allow ssa.maketrans to handle variable names in addition to indices.
+  - Wrote vignette with three examples.
+
+---------------------------
+Version 0.902 - 30 Dec 2010
+---------------------------
+  - Fix Solaris compiler errors.
+
+---------------------------
+Version 0.901 - 12 Nov 2010
+---------------------------
+  - Fix non-portable use of LAPACK_LIBS.  Thanks to Brian Ripley.
+
+-------------------------
+Version 0.9 - 19 Oct 2010
+-------------------------
+  - First version in CRAN

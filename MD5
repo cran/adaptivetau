@@ -1,0 +1,16 @@
+a994d36113f699281350af38708b85e9 *DESCRIPTION
+2bd0651369b7404d27ae65905a6a84b0 *NAMESPACE
+5f1c8abc933c769b99a9cc3bf85f39dc *NEWS
+fcf58026293257b2ca5e33a7d94e4325 *R/ssa.adaptivetau.R
+e814abd5c5c7313735a618e721d20afe *inst/doc/adaptivetau.Rnw
+55c296ce296f6cc26568e3aba4582695 *inst/doc/adaptivetau.pdf
+010c60d9a7cd0739737c5f90459c31a0 *man/ssa.adaptivetau.Rd
+954e2a826bd96b0e4b87f09ded475f79 *man/ssa.exact.Rd
+ac31f3172a96e33eb3bee9c68d52b235 *man/ssa.maketrans.Rd
+2a6f9e9e044a78154d3cfda5936d6f48 *src/Makevars
+a89773b42daa4cfb8208a236c16fc590 *src/adaptivetau.cpp
+e814abd5c5c7313735a618e721d20afe *vignettes/adaptivetau.Rnw
+1a1f8f5d2594eb9943f4c92209d5b3fd *vignettes/adaptivetau.bbl
+f1cdde6ba9ac6e72e05c1f356be2cbe2 *vignettes/adaptivetau.blg
+43d178a6c7c890cb1ba92d36d0e7638b *vignettes/refs.bib
+445a2aa53b146e22ca2e176c0d92ab4c *vignettes/texput.log

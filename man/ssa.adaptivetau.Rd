@@ -11,9 +11,10 @@ Approximate stochastic simulation algorithm
 }
 \usage{
 ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
-                jacobianFunc = NULL, maxTauFunc = NULL, deterministic = FALSE,
+                jacobianFunc = NULL, maxTauFunc = NULL,
+                deterministic = FALSE,
                 relratechange = rep(1, length(init.values)),
-                tl.params = NA)
+                tl.params = NULL)
 }
 \arguments{
   \item{init.values}{
@@ -27,7 +28,7 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     Generally this will be a sparse matrix of primarily 1s and -1s.
   }
   \item{rateFunc}{
-    R-function that returns instantaneous transition rates for each
+    R function that returns instantaneous transition rates for each
     transition in the form a real-valued one-dimensional vector with
     length equal to the number of transitions.  Must accept the
     following arguments:
@@ -37,6 +38,9 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
       \item single real number giving the current time (all simulations
       start at t=0)
     }
+    If the compiler package is available, this function will be
+    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
+    before use.
   }
   \item{params}{
     any R variable to be passed as-is to rateFunc, presumably specifying
@@ -46,29 +50,43 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     final time of simulation.  Due to the approximate nature of the
     tau-leaping algorithm, the simulation may overshoot this time somewhat.
   }
-  \item{jacobianFunc}{ R-function that returns Jacobian of transition
+  \item{jacobianFunc}{ R function that returns Jacobian of transition
     rates.  If supplied, enables the use of the implicit tau-leaping
-    algorithm (if appropriate; used in stiff systems).  Takes same
-    parameters as rateFunc.
+    algorithm (if appropriate; used in stiff systems).  In contrast to
+    typical definition of Jacobian (but consistent with the transition
+    matrix parameter above), columns represent transitions (functions)
+    and rows represent state variables (different partial derivative
+    variables). jacobianFunc takes the same parameters as rateFunc.
+    \bold{NOTE:} the implicit tau-leaping algorithm will reduce the observed
+    variance for fast-changing state variables, although the mean will
+    be correct.
+    If the compiler package is available, this function will be
+    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
+    before use.
   }
-  \item{maxTauFunc}{ R-function that returns single real number giving
+  \item{maxTauFunc}{ R function that returns single real number giving
     the maximum tau leap allowable from the current state.  Only
-    executed if the Adaptive tau algorithm wants to leap in a step
-    greater than t.params$maxTau (should only need to use if your rate
-    functions are dramatically discontinuous).  Takes same parameters as
-    rateFunc.
+    executed if the adaptive tau algorithm wants to leap in a step
+    greater than tl.params$maxtau (should only need to use if your rate
+    functions have a dramatically discontinuous first derivative).
+    Takes same parameters as rateFunc.
+    If the compiler package is available, this function will be
+    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
+    before use.
   }
   \item{deterministic}{
     if not FALSE, one-dimensional logical vector of length equal to the
     number of transitions.  Any transitions marked TRUE will be applied
     every timestep using the \bold{expected} degree of change.  Note
     this will almost certainly result in non-integer values for any
-    affected state variables.
+    affected state variables.  Also, note that this is still an
+    approximation -- not a true numerical ODE solution -- and at least
+    one transition must be stochastic for this to work at all.
   }
   \item{relratechange}{
     one-dimensional vector of length equal to the number of state
     variables providing an upperbound to the ratio of amount that any
-    transition rate will change givenm a corresponding change in the
+    transition rate will change given a corresponding change in the
     state variable.  In other words, if variable i doubles, can we be
     assured that no transition will \bold{more} than double (ratio of
     1)?  If not, then you need to set this variable to be greater than 1.
@@ -83,8 +101,14 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
         rates must be before we classify them as in
         partial-equilibrium.  Only applies to the implicit tau routine.
       }
-      \item{maxtau}{default Inf; Maximum leap allowed.  Should only need
+      \item{maxtau}{default Inf; maximum leap allowed.  Should only need
         to specify if rate functions are drastically non-smooth.
+      }
+      \item{extraChecks}{default TRUE; whether to perform a battery of
+        validity checks on the state variables and rates after every
+        call to "rateFunc."  Slows down implementation, but unless
+        you are SURE you have designed your transition matrix and rate
+        function correctly, probably best to keep these checks.
       }
     }
   }
@@ -119,12 +143,15 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
   }
 
   All error messages that reference variables or transitions by number
-  use 1-based numbering where the first state (or transition) is 1.
+  use 1-based numbering where the first variable (or transition) is 1.
 }
 \value{
-  two-dimensional matrix with rows for every timepoint at which the
+  Two-dimensional matrix with rows for every timepoint at which the
   rateFunc was evaluated and columns giving the value for every state
   variable at that time.  The first column specifies the time.
+}
+\note{
+  Development of this package was supported in part by National Science Foundation award DBI-0906041.  Any opinions, findings, and conclusions or recommendations expressed in this material are those of the author and do not necessarily reflect the views of the National Science Foundation.
 }
 \references{
   Cao Y, Gillespie DT, Petzold LR, \emph{The Journal of
@@ -140,23 +167,54 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
   %% ~~objects to See Also as \code{\link{help}}, ~~~
   For systems with sparse transition matrices, see helper function
   \code{\link{ssa.maketrans}}.  For a pure-R implementation without C++
-  underneath, see \code{\link[GillespieSSA]{GillespieSSA}}
+  underneath, see \code{\link[GillespieSSA]{GillespieSSA}}.  Also,
+  \code{\link{ssa.exact}} exposes a R interface to the C++
+  implementation of the exact, non-approximate simulation algorithm
+  (sometimes known as "Gillespie").
 }
 \examples{
-# Lotka-Volterra example
+
+## Simple Lotka-Volterra example
+
+# We have three potential transitions:
+transitions = cbind(c( 1, 0), # prey grow (+1 prey)
+                    c(-2, 1), # predation (-2 prey, +1 predator)
+                    c( 0,-1)) # predator dies (-1 predator)
+
+# Function to calculate transition rates, given variables and parameters
 lvrates <- function(x, params, t) {
-  with(params, {
-    return(c(preygrowth*x[1], ## prey growth rate
-             x[1]*x[2]*pred,  ## prey death / predator growth rate
-             x[2]*preddeath)) ## predator death rate
-  })
+  return(c(params$preygrowth*x["prey"],      # rate of prey growing
+           x["prey"]*x["pred"]*params$eat,   # rate of predation
+           x["pred"]*params$preddeath))      # rate of predators dying
 }
-par=list(preygrowth=10, pred=0.01, preddeath=10);
-r=ssa.adaptivetau(c(1000,1000),
-                  matrix(c(1,0, -1,1, 0,-1), nrow=2), lvrates, par, tf=1,
-                  tl.params=list(epsilon = 0.02))
-matplot(r[,"time"], r[,c("x1","x2")], type='l', xlab='Time', ylab='Counts')
-legend("topleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
+
+# Set the Lotka-Volterra parameters
+params = list(preygrowth=10, eat=0.01, preddeath=10);
+
+# Set the random seed (only necessary if you want to reproduce results)
+set.seed(4)
+
+# Perform the stochastic simulation!
+r=ssa.adaptivetau(c(prey = 1000, pred = 500),
+                  transitions, lvrates, params, tf=12)
+
+# Plot the results
+matplot(r[,"time"], r[,c("prey","pred")], type='l', xlab='Time',
+        ylab='Counts (log scale)', log='y')
+legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
+
+
+# However, if you are interested in very fine-scale variance, perhaps the
+# default parameters smooth too much.  Try reducing the tl.param epsilon
+# to see a better approximation:
+s=ssa.adaptivetau(c(prey = 1000, pred = 500),
+                  transitions, lvrates, params, tf=12,
+                  tl.params = list(epsilon=0.01)) # reduce "epsilon"
+par(mfrow=c(2,1));
+matplot(r[r[,"time"]<2,"time"], r[r[,"time"]<2,c("prey","pred")],
+        type='l', xlab='Time', ylab='Counts', main="Original (epsilon=default)")
+matplot(s[s[,"time"]<2,"time"], s[s[,"time"]<2,c("prey","pred")],
+        type='l', xlab='Time', ylab='Counts', main="Fine-scale (epsilon=0.01)")
 }
 % Add one or more standard keywords, see file 'KEYWORDS' in the
 % R documentation directory.

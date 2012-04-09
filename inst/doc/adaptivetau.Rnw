@@ -1,0 +1,230 @@
+%\VignetteIndexEntry{adaptivetau examples}
+\documentclass[11pt,nogin]{article}
+\usepackage[authoryear]{natbib}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{url}
+
+<<echo=FALSE>>=
+pdf.options(pointsize=11) #match latex pointsize
+@ 
+
+\begin{document}
+\title{\texttt{adaptivetau}: efficient stochastic simulations in R}
+\author{Philip Johnson}
+\date{}
+\maketitle
+\begin{abstract}
+  Stochastic processes underlie all of biology, from the large-scale processes of evolution to the fine-scale processes of biochemical interactions. Consequently, the analysis of biological data frequently necessitates the use of Markov models.  While these models sometimes yield analytic solutions, simulations can provide intuition when analytic results are intractable.  This vignette presents a few examples of \texttt{adaptivetau} applied to biological problems.
+\end{abstract}
+
+
+\section*{Introduction}
+
+Fundamentally, stochastic effects become critical to take into account when the quantities in a system are small enough that extinction becomes probable.  This vignette presents three such biological systems:
+\begin{enumerate}
+  \item (ecology) Lotka-Volterra predator-prey dynamics predict oscillations in the population sizes of predator and prey species for certain parameters \citep{Lot20}.  However, when the population of either species nears zero, chance effects can lead to extinction of that species and thus a halt to the oscillations.
+  \item (evolution) When a new mutation arises in a population of size $N$, it will eventually be either lost (reaching 0\% frequency) or fix (reaching 100\% frequency).   If the allele is selectively neutral, then with probability $(N-1)/N$, the stochastic process of genetic drift will lead to the new allele disappearing from the population instead of reaching fixation \citep{Kim57}.
+  \item (epidemiology) In general, emerging zoonotic infections are poorly adapted to humans and thus unlikely to be transmitted from the initial infected person to significantly more people.  However, continued contact between humans and an animal reservoir will give the pathogen more chances to become human adapted, leading to a larger epidemic \citep{LGP+09}.
+\end{enumerate}
+Crucially, these stochastic processes are all Markovian --- the future state of the process, conditional on the present state, is independent of the past.
+
+Here, we focus on simulating trajectories from a continuous-time Markov process for which the transition rates are not a function of time (i.e.\ time-homogeneous).  The straightforward (and exact) method of simulating such a process requires many iterations of 1) drawing a random ex\-po\-nen\-tial\-ly-dis\-tri\-buted waiting time until the next transition and 2) randomly selecting the identity of the transition, weighted by the relative transition rates.  This solution, which is known as the Gillespie algorithm in the chemical physics literature \citep{Gil76}, becomes impractical as any one transition rate grows large.  Instead, models
+with larger transition rates require an approximate approach that increases simulation speed while still maintaining reasonable accuracy.  One way to perform this approximation is to reduce the number of iterations by treating transition rates as constant over time periods for which this approximation leads to little error.
+
+The \texttt{adaptivetau} package in R implements both an exact solution and an approximate solution known as the ``adaptive tau-leaping algorithm'' \citep{CGP07}.  Similar functionality exists in the publicly-available \texttt{GillespieSSA} R package \citep{Pin08}; however, our new implementation is much faster, due in part to its underlying implementation in C++.
+
+
+\section*{Methods}
+
+\emph{IMPORTANT: This section can be skipped if you just want to learn to use the package, but the approximations involved in the adaptive tau-leaping algorithm should be understood before interpreting simulation results!}
+
+First we define our notation and use it to describe the type of model simulated by this package. Then we provide basic intuition for the adaptive tau-leaping algorithm, leaving a more detailed description to \citet{CGP07}.
+
+Let the state of the Markov process at time $t$, $X(t)$, be completely described by a vector of $n\ge1$ random variables $X(t):=[X_{1}(t),\ldots,X_{n}(t)]$, each of which is defined on the non-negative integers. Transitions between states occur according to the instantaneous rate matrix, $Q$. In general, this matrix will be extremely sparse, so we do not attempt to use it directly. Instead, for each allowable transition, $j$, we define a rate, $\lambda_{j}$, and a vector of $n$ integers, $\Delta_{j}:=[\delta_{j,1},\ldots,\delta_{j,n}]$, that reflects the change in state if this transition were followed: $X(t)+\Delta_{j}$. An arbitrary number of transitions may exist: $j\in\mathbb{Z}$. Because we are modeling a time-homogeneous process, a transition rate $\lambda_{j}$ cannot depend on $t$, although it may depend on the current state, $X(t)$. For a given state $X(t)$, transitions that would lead to any of the $n$ state variables becoming negative must have rate 0.
+
+Thus the stochastic model is completely defined by a vector giving the initial state ($X(0)$), a set of allowable transitions ($\{\Delta_{j}\}$) and a function to calculate transition rates given the state ($\lambda(X)$).
+
+Given a model, the package simulates a trajectory from time 0 to a user-supplied stopping time, $t_{f}$. Intuitively, the algorithm identifies time periods during which all transition rates will remain approximately constant and all $n$ state variables will remain greater than zero with probability $\sim1$. Then the simulator can ``leap'' over such a period of length $\tau$ and, for each transition, add the net effect of the Poisson-distributed number of transitions that should have occurred during this period: $X(t+\tau)\approx X(t)+\sum_{j}y_{j}\Delta_{j}$ where $y_{j}\sim\mbox{Poisson}(\tau\lambda_{j})$. The challenge arises in handling models for which transition rates frequently change and in balancing efficiency with accuracy when selecting these time periods to leap over. Here we implement the algorithm of \citet{CGP07}.
+
+
+
+\section*{Example 1: ecology}
+Consider a simple Lotka-Volterra ecological model in which a prey species ($X_{1}$) interacts with a predator species ($X_{2}$). Traditionally, this would be written using two differential equations:
+\[
+\begin{split}
+  dX_{1}/dt & =rX_{1}-\alpha X_{1}X_{2}\\
+  dX_{2}/dt & =\beta X_{1}X_{2}-\delta X_{2}
+\end{split}
+\]
+However, these equations ignore stochastic variance and the possibility of species extinction. We can reformulate them in a stochastic model with state variables $X(t)=[X_{1}(t),X_{2}(t)]$ and three transitions:
+\begin{enumerate}
+\item growth of prey: $\Delta_{1}=[+1,0]$ with rate $\lambda_{1}=rX_{1}$
+\item predation: $\Delta_{2}=[-2,+1${]} with rate $\lambda_{2}=\beta X_{1}X_{2}$
+(effectively, $\alpha=2\beta$)
+\item death of predators: $\Delta_{3}=[0,-1]$ with rate $\lambda_{3}=\delta X_{2}$
+\end{enumerate}
+Now we can write this model in R for use with
+<<>>=
+library(adaptivetau)
+@ 
+First we specify our transitions ($\Delta$):
+<<>>=
+transitions = cbind(c( 1, 0), # prey grow (+1 prey, no change predator)
+                    c(-2, 1), # predation (-2 prey, +1 predator)
+                    c( 0,-1)) # predator dies (no change prey, -1 predator)
+@ 
+Next we write a function to calculate the rates of each transition ($\lambda$):
+<<>>=
+lvRateF <- function(x, params, t) {
+  return(c(params$r * x["prey"],              # rate of prey growing
+           params$beta * x["prey"]*x["pred"], # rate of predation
+           params$delta * x["pred"]))         # rate of predators dying
+}
+@ 
+Finally we run the simulations setting initial conditions (\texttt{init.values}), parameters (\texttt{params}), and the simulation stop time (\texttt{tf}):
+<<>>=
+set.seed(4) # set random number generator seed to be reproducible
+simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
+                             transitions, lvRateF,
+                             params = list(r=10, beta=0.01, delta=10),
+                             tf=12)
+@ 
+We plot the results in Figure \ref{fig-lv} using the following code:
+<<eval=FALSE>>=
+matplot(simResults[,"time"], simResults[,c("prey","pred")], type='l',
+        xlab='Time', ylab='Counts (log scale)', log='y')
+legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
+@ 
+
+\begin{figure}
+  \centerline{
+<<fig=TRUE,echo=FALSE,width=4,height=2.5>>=
+par(mex=1, mar=c(3,3,1,1), mgp=c(2,.75,0))
+matplot(simResults[,"time"], simResults[,c("prey","pred")], type='l',
+        xlab='Time', ylab='Counts (log scale)', log='y')
+legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
+@
+}\caption{\label{fig-lv} Simulated trajectory from the Lotka-Voltera model under the adaptive tau-leaping approximation.}
+\end{figure}
+
+\subsection*{Exact vs approximate algorithms}
+The above code uses the adaptive tau-leaping approximation for simulation.  An exact simulation requires more computational time, but captures more fine-scale variance, as you can see by running another simulation using the \texttt{ssa.exact} command:
+<<eval=FALSE>>=
+simResults = ssa.exact(init.values = c(prey = 1000, pred = 500),
+                       transitions, lvRates,
+                       params = list(r=10, beta=0.01, delta=10),
+                       tf=12)
+@
+Alternatively, you can improve the approximation by reducing the $\epsilon$ variable in the tau-leaping parameters (\texttt{tl.params}) when calling \texttt{ssa.adaptivetau} (in the earlier example, $\epsilon$ takes its default value of 0.05):
+<<eval=FALSE>>=
+simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
+                             transitions, lvRates,
+                             params = list(r=10, beta=0.01, delta=10),
+                             tf=12,
+                             tl.params = list(epsilon = 0.005))
+@
+
+Note we have explicitly linked the death of prey to growth in the predator population by placing these two actions in a single transition and incorporating the parameter $\alpha$ into the $\Delta_{2}$ vector. Alternatively, these actions could have been split into two independent transitions with state change vectors $[-1,0]$ and $[0,+1]$ and rates $\alpha X_{1}X_{2}$ and $\beta X_{1}X_{2}$. This formulation would yield slightly increased variance in the stochastic process since these actions are uncoupled.
+
+With the parameters and initial conditions used in this example, the deterministic model predicts a steady state with $dX_{1}/dt=dX_{2}/dt=0$, while our stochastic trajectory has a dramatically different outcome with prey becoming extinct around time 11. If we repeat the simulation many times, we find the prey go extinct in approximately 1/3 of the simulations (followed shortly by extinction of the predator) while the predator become extinct in the other 2/3 of the simulations
+(and prey grow infinitely, revealing a fundamental unrealistic aspect of this model).
+
+
+\section*{Example 2: genetic drift}
+Consider a Moran model for the evolution of a population of size $N$ in which we track the number of individuals with a novel mutant allele ($X$) versus the number of individuals with the ancestral allele ($N-X$).  Since the population size is a constant, this model has only one independent variable ($X$).  Under the Moran model, evolution occurs when one individual is chosen to reproduce and, simultaneously, one individual is chosen to die.  Thus the model allows only ``one-step'' transitions in which $X$ either decreases or increases by one ($\Delta_1=[-1]$ and $\Delta_2=[+1]$).  Both transitions occur at the same rate: $\lambda_1 = \lambda_2 = \frac{X}{N}\frac{N-X}{N}$.
+
+Although this model has only one variable, we have two ``critical values'' for this variable: $X=0$ and $X=N$ are both absorbing boundaries.  The adaptive tau-leaping approximation is careful near the $X=0$ boundary, but it is unaware of other critical values.  We work around this problem by creating an additional variable for the ancestral allele, such that $X_2 = 0$ when $X_1 = N$.
+<<>>=
+library(adaptivetau)
+transitions = cbind(c(-1,+1), # num individuals w/ derived allele decreases
+                    c(+1,-1)) # num individuals w/ derived allele increases
+driftRateF <- function(x, params, t) {
+  rep(x[1] * x[2]/sum(x)^2, 2)
+}
+r=ssa.adaptivetau(c(500,500), transitions, driftRateF, params=NULL, tf=Inf)
+@ 
+Simulation results are plotted in Figure \ref{fig-drift}.  The above code also demonstrates an alternative stopping condition for the simulation: when \texttt{tf=Inf}, the simulation will run until all transition rates are 0 (in this case, when either allele fixes in the population).
+\begin{figure}
+  \centerline{
+<<fig=TRUE,echo=FALSE,width=4,height=2.5>>=
+par(mex=1, mar=c(3,3,1,1), mgp=c(2,.75,0))
+plot(r[,"time"], r[,"x1"], type='l', xlab='Time', ylab='Number of derived alleles', ylim=c(0,1000))
+@
+}\caption{\label{fig-drift} Genetic drift starting at frequency of 50\% in a population of size 1000.}
+\end{figure}
+
+
+\section*{Example 3: epidemiology}
+We want to model the stuttering transmission of an infectious disease in the initial stages of its movement from a non-human animal reservoir to a human population.  Our model is a slight modification on the standard Kermack-McKendrick SIR compartment model: susceptible ($S$), infected with non-human-adapted pathogen ($I_1$), infected with human-adapted pathogen ($I_2$), and recovered (this last class is also immune) ($R$).
+
+First, the differential equation representation:
+\[
+\begin{split}
+  dS/dt & = -S(z + \beta_1 I_1 + \beta_1 \mu I_1 + \beta_2 I_2)\\
+  dI_{1}/dt & = S(z + \beta_1 I_1) - I_1(\delta_1 + \gamma_1)\\
+  dI_{2}/dt & = S(\beta_1 \mu I_1 + \beta_2 I_2) - I_2(\delta_2 + \gamma_2)\\
+  dR/dt & = \gamma_1 I_1 + \gamma_2 I_2
+\end{split}
+\]
+where we assume transmissible contact with infected animals occurs at a constant rate $z$, human-to-human transmissible contact occurs with rates $\beta_{1,2}$, human adaptation occurs with rate $\mu$, death due to infection with rates $\delta_{1,2}$ and recovery with rates $\gamma_{1,2}$.
+
+Now we will make a stochastic version of this model in R.  Since this model has a few more variable than our earlier examples, we will use the \texttt{ssa.maketran} helper function which eases creation of the transition matrix:
+<<>>=
+init.values = c(
+  S = 10^5, # susceptible humans
+  I1 = 0,   # infected humans
+  I2 = 0,   # infected humans
+  R = 0)    # recovered (and immune) humans
+
+transitions = ssa.maketrans(names(init.values),
+  rbind('S', -1, 'I1', +1), # infection (animal-adapted strain)
+  rbind('S', -1, 'I2', +1), # infection (human-adapted strain)
+  rbind('I1', -1),          # death due to infection
+  rbind('I2', -1),
+  rbind('I1', -1, 'R', +1), # recovery
+  rbind('I2', -1, 'R', +1)
+  )
+
+SIRrateF <- function(x, p, t) {
+  return(c(x["S"] * (p$zoonotic + p$beta[1]*x["I1"]), # infection rate
+           x["S"] * (p$beta[2]*x["I2"] + p$mu*p$beta[1]*x["I1"]),
+           params$delta[1]*x["I1"], # infected death rate
+           params$delta[2]*x["I2"],
+           params$gamma[1]*x["I1"], # recovery rate
+           params$gamma[2]*x["I2"]))
+}
+
+params = list(zoonotic=1e-6, beta=c(1e-7, 1e-5), mu=0.1,
+              delta=c(1e-2,1e-5), gamma=c(0.1, 0.1))
+
+set.seed(3) # set random number generator seed to be reproducible
+r=ssa.adaptivetau(init.values, transitions, SIRrateF, params, tf=1000)
+@ 
+Output from this simulation appears in Figure \ref{fig-SIR}.
+\begin{figure}
+  \centerline{
+<<fig=TRUE,echo=FALSE,width=4,height=2.5>>=
+par(mex=1, mar=c(3,3,1,1), mgp=c(2,.75,0))
+matplot(r[,"time"], r[,c("S","I1","I2")], type='l', log='y', xlab="Time", ylab="Individuals (log scale)", col=c('black', 'red', 'blue'))
+legend("topright", legend=c("S", expression(I[1]), expression(I[2])), lty=1:3, col=c('black', 'red', 'blue'))
+@
+}\caption{\label{fig-SIR} Simulated trajectory from SIIR model of stuttering zoonotic transmission.  Zoonotic transmission occurs many times (red dashed line) before the pathogen becomes human-adapted and creates a serious epidemic (blue dotted line).}
+@ 
+\end{figure}
+
+
+\section*{Conclusion}
+While the above examples are simple, the \texttt{adaptivetau} package maintains quick runtimes on models with hundreds of variables and thousands of transitions. Due to the approximations inherent in the adaptive tau-leaping algorithm, the precise runtime depends strongly on the exact nature of the model structure and parameters. However, this hybrid R/C++ implementation appears to be approximately 50 times faster than the pure R implementation in the \texttt{GillespieSSA} package.
+
+
+\section*{Acknowledgment}
+
+
+\paragraph{Funding:}
+
+This work supported in part by National Science Foundation DBI-0906041 to Philip Johnson and National Institutes of Health R01-AI049334 to Rustom Antia.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}

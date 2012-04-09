@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 162 2010-11-12 17:28:37Z pjohnson $
+/* $Id: adaptivetau.cpp 202 2012-04-09 18:18:17Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -19,17 +19,22 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+    If building library outside of R package (i.e. for debugging):
+        R CMD SHLIB adaptivetau.cpp
     --------------------------------------------------------------------------
 */
 
 #include <iostream>
 #include <vector>
 #include <limits>
-#include <cassert>
 #include <cmath>
+#include <sstream>
+#include <stdexcept>
 
 #include <R.h>
-#include <Rdefines.h>
+#include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include <R_ext/Lapack.h>
 #include <Rmath.h>
@@ -42,26 +47,47 @@ enum EStepType {
     eImplicit
 };
 
-bool debug = false;
+const bool debug = false;
+
+//use below rather than R's "error" directly (which will not free memory, etc.)
+#ifdef throwError
+#undef throwError
+#endif
+#define throwError(e) { ostringstream s; s << e; throw runtime_error(s.str()); }
+
+// Call R function without responding to user interrupts (or other, I
+// suppose).  This lets use catch them and free memory in the heap.
+// Unfortunately, R_interrupts_suspended is not directly part of the R
+// API (although it is used by the BEGIN/END_SUSPEND_INTERRUPTS macros
+// in R_ext/GraphicsDevice.h)
+extern "C" { LibExtern Rboolean R_interrupts_suspended;}
+SEXP evalWithoutInterrupts(SEXP expr) {
+    R_interrupts_suspended = TRUE;
+    SEXP res = eval(expr, NULL);
+    R_interrupts_suspended = FALSE;
+    return res;
+}
 
 class CStochasticEqns {
 public:
     CStochasticEqns(SEXP initVal, int *nu, unsigned int numTrans,
                     SEXP rateFunc, SEXP rateJacobianFunc,
-                    SEXP params, double* changeBound, SEXP maxTauFunc) {
+                    SEXP params, double* changeBound, SEXP maxTauFunc,
+                    SEXP detTrans) {
         // copy initial values into new vector (keeping in SEXP vector
         // allows easy calling of R function to calculate rates)
-        m_NumStates = GET_LENGTH(initVal);
+        m_NumStates = length(initVal);
         SEXP x;
         PROTECT(x = allocVector(REALSXP, m_NumStates));
         copyVector(x, initVal);
-        if (isNull(GET_NAMES(initVal))) {
+        if (isNull(getAttrib(initVal, R_NamesSymbol))) {
             m_VarNames = NULL;
         } else {
-            SEXP namesO = GET_NAMES(initVal);
-            PROTECT(m_VarNames = allocVector(VECSXP, GET_LENGTH(namesO)));
+            SEXP namesO = getAttrib(initVal, R_NamesSymbol);
+            PROTECT(m_VarNames = allocVector(VECSXP, length(namesO)));
+
             copyVector(m_VarNames, namesO);
-            SET_NAMES(x, m_VarNames);
+            setAttrib(x, R_NamesSymbol, m_VarNames);
         }
         m_X = REAL(x);
 
@@ -76,6 +102,11 @@ public:
         }
         m_TransCats.resize(numTrans, eNoncritical);
 
+        // potentially flag some transitions as "deterministic"
+        if (detTrans  &&  !isNull(detTrans)) {
+            x_SetDeterministic(LOGICAL(detTrans), length(detTrans));
+        }
+
         // needed for ITL
         x_IdentifyBalancedPairs();
         x_IdentifyRealValuedVariables();
@@ -86,7 +117,7 @@ public:
         PROTECT(s_time = allocVector(REALSXP, 1));
         m_T = REAL(s_time);
         PROTECT(m_RateFunc = lang4(rateFunc, x, params, s_time));
-        if (isNull(rateJacobianFunc)) {
+        if (!rateJacobianFunc  ||  isNull(rateJacobianFunc)) {
             m_RateJacobianFunc = NULL;
         } else {
             PROTECT(m_RateJacobianFunc = lang4(rateJacobianFunc, x,
@@ -103,16 +134,29 @@ public:
         m_NumExactSteps[eExact] = 100;
         m_NumExactSteps[eExplicit] = 100;
         m_NumExactSteps[eImplicit] = 10;
-        m_ITLConvergenceTol = 0.1;
+        m_ITLConvergenceTol = 0.01;
         m_MaxTau = numeric_limits<double>::infinity();
         m_MaxSteps = 0; // special case 0 == no limit
 
         //useful additional parameters
+        m_ExtraChecks = true;
         m_RateChangeBound = changeBound;
-        if (isNull(maxTauFunc)) {
+        if (!maxTauFunc  ||  isNull(maxTauFunc)) {
             m_MaxTauFunc = NULL;
         } else {
             PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params,s_time));
+        }
+
+        //check initial conditions to make sure legit
+        for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+            if (m_X[i] < 0) {
+                throwError("initial value for variable " << i+1 <<
+                           " must be positive (currently " << m_X[i] << ")");
+            }
+            if (!m_RealValuedVariables[i]  &&  (m_X[i] - trunc(m_X[i]) > 1e5)) {
+                throwError("initial value for variable " << i+1 <<
+                           " must be an integer (currently " << m_X[i] << ")");
+            }
         }
         
         *m_T = 0;
@@ -134,48 +178,95 @@ public:
             ++cnt;
         }
         UNPROTECT(cnt);
-        PutRNGstate();
     }
     void SetTLParams(SEXP list) {
-        SEXP names = GET_NAMES(list);
+        SEXP names = getAttrib(list, R_NamesSymbol);
 
-        for (int i = 0;  i < GET_LENGTH(names);  ++i) {
-            if (!isReal(VECTOR_ELT(list, i))) {
-                warning("ignoring non-numeric value for parameter '%s'",
-                        CHAR(VECTOR_ELT(names, i)));
-            } else if (strcmp("epsilon", CHAR(CHARACTER_DATA(names)[i])) == 0) {
+        for (int i = 0;  i < length(names);  ++i) {
+            if (strcmp("epsilon", CHAR(STRING_PTR(names)[i])) == 0) {
+                if (!isReal(VECTOR_ELT(list, i))  ||
+                    length(VECTOR_ELT(list, i)) != 1) {
+                    throwError("invalid value for parameter '" <<
+                               CHAR(STRING_PTR(names)[i]) << "'");
+                }
                 m_Epsilon = REAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("delta", CHAR(CHARACTER_DATA(names)[i])) == 0) {
+            } else if (strcmp("delta", CHAR(STRING_PTR(names)[i])) == 0) {
+                if (!isReal(VECTOR_ELT(list, i))  ||
+                    length(VECTOR_ELT(list, i)) != 1) {
+                    throwError("invalid value for parameter '" <<
+                               CHAR(STRING_PTR(names)[i]) << "'");
+                }
                 m_Delta = REAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("maxtau", CHAR(CHARACTER_DATA(names)[i])) == 0) {
+            } else if (strcmp("maxtau", CHAR(STRING_PTR(names)[i])) == 0) {
+                if (!isReal(VECTOR_ELT(list, i))  ||
+                    length(VECTOR_ELT(list, i)) != 1) {
+                    throwError("invalid value for parameter '" <<
+                               CHAR(STRING_PTR(names)[i]) << "'");
+                }
                 m_MaxTau = REAL(VECTOR_ELT(list, i))[0];
+            } else if (strcmp("extraChecks",
+                              CHAR(STRING_PTR(names)[i])) == 0) {
+                if (!isLogical(VECTOR_ELT(list, i))  ||
+                    length(VECTOR_ELT(list, i)) != 1) {
+                    throwError("invalid value for parameter '" <<
+                               CHAR(STRING_PTR(names)[i]) << "'");
+                }
+                m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
             } else {
                 warning("ignoring unknown parameter '%s'",
-                        CHAR(CHARACTER_DATA(names)[i]));
+                        CHAR(STRING_PTR(names)[i]));
             }
         }
     }
 
-    void SetDeterministic(int *det, unsigned int n) {
-        if (n != m_Nu.size()  &&  n > 1) {
-            warning("mismatch between length of logical vector specifying deterministic transitions and total number of transitions; ignoring deterministic!");
-            return;
-        }
-        for (unsigned int i = 0;  i < n;  ++i) {
-            if (det[i]) {
-                m_TransCats[i] = eDeterministic;
-            }
-        }
-        x_IdentifyRealValuedVariables();
+    // Functions below are a hack suggested by Simon Urbanek (although
+    // he "would not recommend for general use") to check if the user has
+    // asked to interrupt execution.  The problem with calling
+    // R_CheckUserInterrupt directly is it longjmps and we don't have
+    // a chance to free memory from the heap.
+    // http://tolstoy.newcastle.edu.au/R/e13/devel/11/04/1049.html
+    static void chkIntFn(void*) { R_CheckUserInterrupt(); }
+    bool checkUserInterrupt(void) {
+        return (R_ToplevelExec(chkIntFn, NULL) == FALSE);
     }
 
-    void EvaluateUntil(double tF) {
+    void EvaluateATLUntil(double tF) {
         unsigned int c = 0;
-        while (*m_T < tF  &&  (m_MaxSteps == 0 || ++c < m_MaxSteps)) {
+        //add initial conditions to time series
+        m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
+        //main loop
+        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)) {
             x_SingleStepATL(tF);
-            R_CheckUserInterrupt();
+            if (++c % 10 == 0  &&  checkUserInterrupt()) {
+                throwError("simulation interrupted by user at time " << *m_T
+                           << " after " << c << " time steps.");
+            }
         }
+        //save RNG state back to R (could also do in destructor, but
+        //no harm in extra calls to PutRNGstate and avoids potential
+        //problems with PROTECTing return value from GetTimeSeriesSEXP
+        PutRNGstate();
     }
+    void EvaluateExactUntil(double tF) {
+        unsigned int c = 0;
+        //add initial conditions to time series
+        m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
+        //main loop
+        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)) {
+            x_UpdateRates();
+            x_SingleStepExact(tF);
+            m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
+            if (++c % 10 == 0  &&  checkUserInterrupt()) {
+                throwError("simulation interrupted by user at time " << *m_T
+                           << " after " << c << " time steps.");
+            }
+        }
+        //save RNG state back to R (could also do in destructor, but
+        //no harm in extra calls to PutRNGstate and avoids potential
+        //problems with PROTECTing return value from GetTimeSeriesSEXP
+        PutRNGstate();
+    }
+
     SEXP GetTimeSeriesSEXP(void) const {
         SEXP res;
         PROTECT(res = allocMatrix(REALSXP, m_TimeSeries.size(), m_NumStates+1));
@@ -193,16 +284,16 @@ public:
         SET_VECTOR_ELT(dimnames, 1, colnames);
         SET_VECTOR_ELT(colnames, 0, mkChar("time"));
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-            if (m_VarNames  &&  (unsigned int)GET_LENGTH(m_VarNames) > i) {
+            if (m_VarNames  &&  (unsigned int)length(m_VarNames) > i) {
                 SET_VECTOR_ELT(colnames, i+1,
-                               CHARACTER_DATA(m_VarNames)[i]);
+                               STRING_PTR(m_VarNames)[i]);
             } else {
                 char name[10];
                 snprintf(name, 10, "x%i", i+1);
                 SET_VECTOR_ELT(colnames, i+1, mkChar(name));
             }
         }
-        SET_DIMNAMES(res, dimnames);
+        setAttrib(res, R_DimNamesSymbol, dimnames);
 
         UNPROTECT(3);
         return res;
@@ -246,40 +337,80 @@ protected:
 protected:
     void x_IdentifyBalancedPairs(void);
     void x_IdentifyRealValuedVariables(void);
+    void x_SetDeterministic(int *det, unsigned int n);
 
-    void x_AdvanceDeterministic(double deltaT);
+    void x_AdvanceDeterministic(double deltaT, bool clamp = false);
     void x_SingleStepExact(double tf);
     bool x_SingleStepETL(double tau);
     bool x_SingleStepITL(double tau);
     void x_SingleStepATL(double tf);
 
     void x_UpdateRates(void) {
+        if (m_ExtraChecks) {
+            for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+                if (m_X[i] < 0) {
+                    throwError("negative variable: " << i+1 << " is " <<
+                               m_X[i] << " (check rate function "
+                               "and/or transition matrix)");
+                } else if (isnan(m_X[i])) {
+                    throwError("NaN variable: " << i+1 << " is " <<
+                               m_X[i] << " (check rate function "
+                               "and/or transition matrix)");
+                }
+            }
+        }
+
         //not sure if this protect/unprotect block is necessary, but
         //seems better to err on the safe side
         if (m_Rates != NULL) { 
             UNPROTECT(1);
         }
-        SEXP res = eval(m_RateFunc, NULL);
+        SEXP res = evalWithoutInterrupts(m_RateFunc);
         PROTECT(res);
         m_Rates = REAL(res);
-        if ((unsigned int) GET_LENGTH(res) != m_Nu.size()) {
-            error("invalid rate function -- returned number of rates is "
-                  "not the same as specified by the transition matrix! "
-                  "(%i versus %i)", GET_LENGTH(res), m_Nu.size());
+
+        if ((unsigned int) length(res) != m_Nu.size()) {
+            throwError("invalid rate function -- returned number of rates is "
+                       "not the same as specified by the transition matrix! "
+                       "(" << length(res) << " versus " << m_Nu.size() <<
+                       ")");
+        }
+        if (m_ExtraChecks) {
+            for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
+                if (isnan(m_Rates[j])) {
+                    throwError("invalid rate function -- rate for transition "
+                               << j+1 << "is not a number (NA/NaN)! (check "
+                               "for divison by zero or similar)");
+                }
+                if (m_Rates[j] < 0) {
+                    throwError("invalid rate function -- rate for transition "
+                               << j+1 << "is negative!");
+                }
+            }
         }
     }
     double* x_CalcJacobian(void) {
-        SEXP res = eval(m_RateJacobianFunc, NULL);
-        if ((unsigned int)GET_LENGTH(res) != m_Nu.size()*m_NumStates) {
-            error("invalid Jacobian function -- did not return enough rates!");
+        SEXP res = evalWithoutInterrupts(m_RateJacobianFunc);
+        if (!isMatrix(res)) {
+            throwError("invalid Jacobian function -- should return a " <<
+                       m_NumStates << " by " << m_Nu.size() << " matrix");
+        }
+        unsigned int nrow = INTEGER(getAttrib(res, R_DimSymbol))[0];
+        unsigned int ncol = INTEGER(getAttrib(res, R_DimSymbol))[1];
+        if (nrow != m_NumStates  ||  ncol != m_Nu.size()) {
+            throwError ("invalid Jacobian function -- returned a " << nrow
+                        << " by " << ncol << " matrix instead of the expected "
+                        << m_NumStates << " by " << m_Nu.size() <<
+                        " (variables by transitions)");
         }
         return REAL(res);
     }
     double x_CalcUserMaxTau(void) {
-        assert(m_MaxTauFunc);
-        SEXP res = eval(m_MaxTauFunc, NULL);
-        if (GET_LENGTH(res) != 1  || !isReal(res)) {
-            error("invalid return value from maxTau function");
+        if (!m_MaxTauFunc) { throwError("logic error at line " << __LINE__) }
+        SEXP res = evalWithoutInterrupts(m_MaxTauFunc);
+        if (length(res) != 1  || !isReal(res)) {
+            throwError("invalid return value from maxTau function (should be "
+                       "a single real number)");
         }
         return REAL(res)[0];
     }
@@ -309,8 +440,8 @@ protected:
             if (val < tau) {
                 tau = val;
                 if (tau < 0) {
-                    error("tried to select tau < 0; most likely means your "
-                          "rate function generated a negative rate");
+                    throwError("tried to select tau < 0; most likely means "
+                               "your rate function generated a negative rate");
                 }
             }
             val = pow(max(m_Epsilon * m_X[i] / m_RateChangeBound[i],
@@ -318,8 +449,8 @@ protected:
             if (val < tau) {
                 tau = val;
                 if (tau < 0) {
-                    error("tried to select tau < 0; most likely means your "
-                          "rate function generated a negative rate");
+                    throwError("tried to select tau < 0; most likely means "
+                               "your rate function generated a negative rate");
                 }
             }
         }
@@ -371,8 +502,12 @@ protected:
         return tau;
     }
 
-    
 private:
+    bool m_ExtraChecks; //turns on extra checks on rates returned by
+                        //user-supplied rate function. Slower, but if
+                        //the rate function does have a bug, this will
+                        //give a more meaningful error message.
+
     unsigned int m_Ncritical;
     double m_Nstiff;
     double m_Epsilon;
@@ -426,6 +561,29 @@ void CStochasticEqns::x_IdentifyBalancedPairs(void) {
     }
 }
 
+/*---------------------------------------------------------------------------*/
+// PRE : m_Nu initialized, boolean vector flagging transitions as
+// deterministic or not (could be just FALSE and n=1)
+// POST: deterministic flag set where appropriate
+void CStochasticEqns::x_SetDeterministic(int *det, unsigned int n) {
+    if (n != m_Nu.size()  &&  n > 1) {
+        throwError("mismatch between length of logical vector specifying "
+                   "deterministic transitions and total number of transitions");
+    }
+    bool atLeastOneStochastic = false;
+    for (unsigned int i = 0;  i < n;  ++i) {
+        if (det[i]) {
+            m_TransCats[i] = eDeterministic;
+        } else {
+            atLeastOneStochastic = true;
+        }
+    }
+    if (!atLeastOneStochastic) {
+        throwError("At least one transition must be stochastic (all "
+                   "transitions are currently flagged as deterministic).");
+    }
+    x_IdentifyRealValuedVariables();
+}
 
 /*---------------------------------------------------------------------------*/
 // PRE : m_Nu initialized, deterministic transition set (if any)
@@ -441,6 +599,7 @@ void CStochasticEqns::x_IdentifyRealValuedVariables(void) {
                 m_RealValuedVariables[m_Nu[j][i].m_State] = true;
             }
         } else {
+            //code below not used since m_Nu matrix is forced to be integers
             for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
                 if (m_Nu[j][i].m_Mag - trunc(m_Nu[j][i].m_Mag) > 1e-5) {
                     m_RealValuedVariables[m_Nu[j][i].m_State] = true;
@@ -455,9 +614,6 @@ void CStochasticEqns::x_IdentifyRealValuedVariables(void) {
 // PRE : list of critical transitions & their total rate
 // POST: one picked according to probability
 unsigned int CStochasticEqns::x_PickCritical(double critRate) const {
-    if (critRate == 0) {
-        error("someting screwy -- complain to author");
-    }
     double r = runif(0,1);
     double d = 0;
     unsigned int j;
@@ -466,38 +622,64 @@ unsigned int CStochasticEqns::x_PickCritical(double critRate) const {
             d += m_Rates[j]/critRate;
         }
     }
-    assert(d >= r); //otherwise logic error..
+    if (!(d >= r)) { throwError("logic error at line " << __LINE__) }
     return j-1;
 }
 
 /*---------------------------------------------------------------------------*/
-// PRE : time period to step
+// PRE : time period to step; whether to clamp variables at 0
 // POST: all determinisitic transitions updated by the expected amount
-void CStochasticEqns::x_AdvanceDeterministic(double deltaT) {
-    for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-        if (m_TransCats[j] == eDeterministic) {
-            for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
-                    deltaT;
+// (i.e. Euler method); if clamping, then negative variables set to 0.
+void CStochasticEqns::x_AdvanceDeterministic(double deltaT, bool clamp) {
+    if (clamp) {
+        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
+            if (m_TransCats[j] == eDeterministic) {
+                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
+                    m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
+                        deltaT;
+                    //clamp at zero if specified
+                    if (m_X[m_Nu[j][i].m_State] < 0) {
+                        m_X[m_Nu[j][i].m_State] = 0;
+                    }
+                }
+            }
+        }
+    } else {
+        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
+            if (m_TransCats[j] == eDeterministic) {
+                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
+                    m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
+                        deltaT;
+                }
             }
         }
     }
 }
 
 /*---------------------------------------------------------------------------*/
-// PRE : simulation end time
+// PRE : simulation end time; **transition rates already updated**
 // POST: a *single* transition taken (no approximation necessary)
 void CStochasticEqns::x_SingleStepExact(double tf) {
     double stochRate = 0;
+    double detRate = 0;
     for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
         if (m_TransCats[j] != eDeterministic) {
             stochRate += m_Rates[j];
+        } else {
+            detRate += m_Rates[j];
         }
     }
     if (stochRate == 0) {
-        *m_T = numeric_limits<double>::infinity();
+        if (detRate == 0) {
+            *m_T = numeric_limits<double>::infinity();
+        } else {
+            double tau = min(1/detRate, tf-*m_T);
+            x_AdvanceDeterministic(tau, true);
+            *m_T += tau;
+        }
         return;
     }
+
     double tau = rexp(1./stochRate);
     if (tau > tf - *m_T) {
         tau = tf - *m_T;
@@ -510,7 +692,7 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
                 d += m_Rates[j]/stochRate;
             }
         }
-        assert(d >= r); //otherwise logic error..
+        if (!(d >= r)) { throwError("logic error at line " << __LINE__) }
         --j;
 
         //take transition "j"
@@ -519,14 +701,9 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
         }
     }
 
-    x_AdvanceDeterministic(tau);
     //clamp deterministic at 0, assuming that it is unreasonable to
     //take a smaller step then exact.
-    for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-        if (m_X[i] < 0) {
-            m_X[i] = 0;
-        }
-    }
+    x_AdvanceDeterministic(tau, true);
     *m_T += tau;
 }
 
@@ -534,13 +711,23 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
 // PRE : tau value to use for step, list of "critical" transitions
 // POST: whether single IMPLICIT tau step was successfully taken (m_X
 // updated if so)
+// NOTE: See equation (7) in Cao et al. (2007)
 bool CStochasticEqns::x_SingleStepITL(double tau) {
-    assert(m_RateJacobianFunc != NULL);
+    if (!m_RateJacobianFunc) { throwError("logic error at line " << __LINE__) }
     double *origX = new double[m_NumStates];
     double *origRates = new double[m_NumStates];
     memcpy(origX, m_X, sizeof(double)*m_NumStates);
     memcpy(origRates, m_Rates, sizeof(double)*m_NumStates);
 
+    if (debug) {
+        cerr << " origX: ";
+        for (unsigned int i =0; i < m_NumStates;  ++i) {
+            cerr << origX[i] << "\t";
+        }
+        cerr << endl;
+    }
+
+    // draw (stochastic) number of times each transition will occur
     vector<int> numTransitions(m_Nu.size(), 0);
     for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
         if (m_TransCats[j] == eNoncritical) {
@@ -551,11 +738,14 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
                 numTransitions[j] = max(0.,floor(rnorm(m_Rates[j]*tau, sqrt(m_Rates[j]*tau))));
             } else {
                 numTransitions[j] = rpois(m_Rates[j]*tau);
+                //cerr << "nt[" << j << "] " << numTransitions[j] << endl;
             }
         }
     }
 
-    //all terms not involving x[t+tau]
+    // Calculate equation (7) terms not involving x[t+tau] and call this alpha:
+    //   alpha = x + nu.(P - tau/2 R(x))
+    // Also initialize iterative search for x[t+tau] at expectation (reset m_X)
     double* alpha = new double[m_NumStates];
     memcpy(alpha, m_X, sizeof(double)*m_NumStates);
     for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
@@ -569,7 +759,13 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
             }
         }
     }
-    /*
+    //expectations may send states negative; clamp!
+    for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+        if (m_X[i] < 0) {
+            m_X[i] = 0;
+        }
+    }
+
     if (debug) {
         cerr << " alpha:";
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
@@ -582,7 +778,7 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
         }
         cerr << endl;
     }
-    */
+
     //a few variables needed by LAPACK
     int N = m_NumStates;
     int nrhs = 1;
@@ -592,20 +788,43 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
     double *matrixB = new double[m_NumStates];
 
     
-    //Use Newton's method to solve implicit equation
-    //perhaps should adjust max # of iterations..
+    //Use Newton's method to solve implicit equation:
+    //  Let Y = x[t+tau]
+    //  F(Y) = Y - alpha - nu.((tau/2)*R(Y))
+    //Solve Jacobian(F(Y0)) Y1 = -F(Y0) for Y1 to iteratively approach solution
+    //This eqn expands to (I - nu.((tau/2)Jacobian(R(Y0)))) Y1 = -F(Y0) where
+    //the Jacobian of rates is supplied by the user.  The term to the
+    //left of Y1 is called matrix A by LAPACK and the term on right is
+    //matrix B.
+    //
+    //Perhaps should adjust max # of iterations..
     bool converged = false;
     unsigned int c = 0;
     while (++c <= 20  &&  !converged) {
-        //cerr << "implicit iteration #" << c << endl;
+        // Check to make sure we haven't taken too big a step --
+        // i.e. no state variables should go negative
+        for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+            if (m_X[i] < 0) {
+                delete[] origRates;
+                delete[] alpha;
+                delete[] ipiv;
+                delete[] matrixA;
+                delete[] matrixB;
+                memcpy(m_X, origX, sizeof(double)*m_NumStates);
+                delete[] origX;
+                return false;
+            }
+        }
+
+        // define matrix A
+        double* rateJacobian = x_CalcJacobian();
         memset(matrixA, 0, m_NumStates*m_NumStates*sizeof(double));
-        double *rateJacobian;
-        rateJacobian = x_CalcJacobian();
         for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
             if (m_TransCats[j] == eNoncritical) {
                 for (unsigned int k = 0;  k < m_Nu[j].size();  ++k) {
                     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-                        //must be stored as col, row for LAPACK
+                        //R stores matrices column-wise
+                        //LAPACK stores matrices row-wise
                         matrixA[i*m_NumStates + m_Nu[j][k].m_State] +=
                             m_Nu[j][k].m_Mag * rateJacobian[j*m_NumStates + i];
                     }
@@ -619,6 +838,9 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
             matrixA[i*m_NumStates + i] += 1;
         }
 
+        // define matrix B
+        // m_X is now our proposed x[t+tau].  Note that m_X has changed
+        // even in our first iteration (initialized to expected value).
         x_UpdateRates();
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
             matrixB[i] = alpha[i] - m_X[i];
@@ -632,7 +854,7 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
             }
         }
 
-        /*
+
     if (debug) {
         cerr << "A:" << endl;
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
@@ -654,12 +876,11 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
         }
         cerr << endl;
     }
-        */
-        //solve eqn
+
+        //solve linear eqn
         F77_NAME(dgesv)(&N, &nrhs, matrixA, &N, ipiv, matrixB, &N, &info); 
         if (info != 0) {
-            cerr << "warning: lapack ran into trouble solving implicit equation"
-                 << endl;
+            warning("warning: lapack ran into trouble solving implicit equation");
             break;
         }
         //matrixB now contains solution (change in X)
@@ -704,21 +925,12 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
             */
         }
 
-    }
+    } // end of iterating for Newton's method
     if (!converged) {
-        cerr << "ITL solution did not converge!" << endl;
-    } else {
-        x_UpdateRates();
-        memcpy(m_X, alpha, sizeof(double)*m_NumStates);
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eNoncritical) {
-                for (unsigned int k = 0;  k < m_Nu[j].size();  ++k) {
-                    m_X[m_Nu[j][k].m_State] +=
-                        m_Nu[j][k].m_Mag * (tau/2) * m_Rates[j];
-                }
-            }
-        }
+        warning("ITL solution did not converge!");
     }
+
+    //restore original rates to execute deterministic transitions
     memcpy(m_Rates, origRates, sizeof(double)*m_NumStates);
     x_AdvanceDeterministic(tau);
 
@@ -801,15 +1013,6 @@ bool CStochasticEqns::x_SingleStepETL(double tau) {
 // Implemented from Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical
 // Physics (2007).
 void CStochasticEqns::x_SingleStepATL(double tf) {
-    //debug check
-    for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-        if (m_X[i] < 0) {
-            error("negative variable: %i is %f", i+1, m_X[i]);
-        } else if (isnan(m_X[i])) {
-            error("NaN variable: %i is %f", i+1, m_X[i]);
-        }
-    }
-
     x_UpdateRates();
     EStepType stepType;
 
@@ -835,11 +1038,6 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
             } else {
                 m_TransCats[j] = eNoncritical;
                 noncritRate += m_Rates[j];
-            }
-            if (m_Rates[j] < 0) {
-                error("at time %f, rate of transition %i is %f (less than 0)!", *m_T, j+1, m_Rates[j]);
-            } else if (isnan(m_Rates[j])) {
-                error("at time %f, rate of transition %i is not a number (NA?)", *m_T, j+1, m_Rates[j]);
             }
         }
     }
@@ -881,9 +1079,7 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
     bool tauTooBig;
     do {
         tauTooBig = false;
-        if (tau1 < 0) {
-            error("uhoh.. tau1 < 0!\n");
-        }
+        if (!(tau1 > 0)) { throwError("logic error at line " << __LINE__) }
         if (tau1 < m_ExactThreshold / (criticalRate + noncritRate)) {
             if (debug) {
                 cerr << "Taking exact steps.. (tau1 = " << tau1 << ")" << endl;
@@ -918,7 +1114,7 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 }
                 tauTooBig = !x_SingleStepETL(min(tau1, tau2));
             } else {
-                if (1) {
+                if (debug) {
                     cerr << "going implicit w/ tau = " << tau1 << endl;
                 }
                 tauTooBig = !x_SingleStepITL(tau1);
@@ -932,10 +1128,11 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                     for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
                         m_X[m_Nu[j][i].m_State] +=  m_Nu[j][i].m_Mag;
                         if (m_X[m_Nu[j][i].m_State] < 0) {
-                            error("variable %i went negative after executing "
-                                  "transition %i.  Most likely either your "
-                                  "rate calculation or transition matrix is "
-                                  "flawed.", m_Nu[j][i].m_State+1, j+1);
+                            throwError("variable " << m_Nu[j][i].m_State+1 <<
+                                       " went negative after executing "
+                                       "transition " << j+1 << ".  Most likely "
+                                       "either your rate calculation or "
+                                       "transition matrix is flawed.");
                         }
                     }
                 }
@@ -965,10 +1162,11 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
 // Exported C entrypoints for calling from R
 
 extern "C" {
-    SEXP adaptiveTau(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_fJacob,
-                     SEXP s_params, SEXP s_tf,
-                     SEXP s_deterministic, SEXP s_changebound,
-                     SEXP s_tlparams, SEXP s_fMaxtau) {
+    SEXP simAdaptiveTau(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_fJacob,
+                        SEXP s_params, SEXP s_tf,
+                        SEXP s_deterministic, SEXP s_changebound,
+                        SEXP s_tlparams, SEXP s_fMaxtau) {
+        try{
         if (!isVector(s_x0)  ||  !isReal(s_x0)) {
             error("invalid vector of initial values");
         }
@@ -981,38 +1179,77 @@ extern "C" {
         if (!isNull(s_fJacob)  &&  !isFunction(s_fJacob)) {
             error("invalid Jacobian function");
         }
-        if (!isReal(s_tf)) {
+        if (!isReal(s_tf)  ||  length(s_tf) != 1) {
             error("invalid final time");
         }
-        if (GET_LENGTH(s_x0) != INTEGER(GET_DIM(s_nu))[0]) {
-            error("mismatch between number of state variables and number of rows in transition matrix");
+        if (length(s_x0) != INTEGER(getAttrib(s_nu, R_DimSymbol))[0]) {
+            error("mismatch between number of state variables (%i) and number "
+                  "of rows in transition matrix (%i)", length(s_x0),
+                  INTEGER(getAttrib(s_nu, R_DimSymbol))[0]);
         }
         if (!isVector(s_deterministic)  ||  !isLogical(s_deterministic)) {
             error("invalid deterministic parameter -- must be logical vector");
         }
         if (!isVector(s_changebound)  ||  !isReal(s_changebound)  ||
-            GET_LENGTH(s_changebound) != GET_LENGTH(s_x0)) {
+            length(s_changebound) != length(s_x0)) {
             error("invalid relratechange");
         }
-        if (!isVector(s_tlparams)) {
-            error("tl.params must be a vector");
+        if (!isNull(s_tlparams)  &&  !isVector(s_tlparams)) {
+            error("tl.params must be a list");
         }
         if (!isNull(s_fMaxtau)  &&  !isFunction(s_fMaxtau)) {
             error("invalid maxTau function");
         }
 
-        CStochasticEqns eqns(s_x0, INTEGER(s_nu), INTEGER(GET_DIM(s_nu))[1],
+        CStochasticEqns eqns(s_x0, INTEGER(s_nu),
+                             INTEGER(getAttrib(s_nu, R_DimSymbol))[1],
                              s_f, s_fJacob, s_params, REAL(s_changebound),
-                             s_fMaxtau);
-        eqns.SetTLParams(s_tlparams);
-        eqns.SetDeterministic(LOGICAL(s_deterministic),
-                              GET_LENGTH(s_deterministic));
-        eqns.EvaluateUntil(REAL(s_tf)[0]);
+                             s_fMaxtau, s_deterministic);
+        if (!isNull(s_tlparams)) {
+            eqns.SetTLParams(s_tlparams);
+        }
+        eqns.EvaluateATLUntil(REAL(s_tf)[0]);
         return eqns.GetTimeSeriesSEXP();
+        } catch (exception &e) {
+            error(e.what());
+            return R_NilValue;
+        }
     }
     
+    //-----------------------------------------------------------------------
+
+    SEXP simExact(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_params, SEXP s_tf) {
+        try {
+        if (!isVector(s_x0)  ||  !isReal(s_x0)) {
+            error("invalid vector of initial values");
+        }
+        if (!isMatrix(s_nu)  ||  !isInteger(s_nu)) {
+            error("invalid transitions matrix");
+        }
+        if (!isFunction(s_f)) {
+            error("invalid rate function");
+        }
+        if (!isReal(s_tf)  ||  length(s_tf) != 1) {
+            error("invalid final time");
+        }
+        if (length(s_x0) != INTEGER(getAttrib(s_nu, R_DimSymbol))[0]) {
+            error("mismatch between number of state variables and number of rows in transition matrix");
+        }
+
+        CStochasticEqns eqns(s_x0, INTEGER(s_nu),
+                             INTEGER(getAttrib(s_nu, R_DimSymbol))[1],
+                             s_f, NULL, s_params, NULL, NULL, NULL);
+        eqns.EvaluateExactUntil(REAL(s_tf)[0]);
+        return eqns.GetTimeSeriesSEXP();
+        } catch (exception &e) {
+            error(e.what());
+            return R_NilValue;
+        }
+    }
+    /*
     R_CallMethodDef callMethods[] = {
-        {"ssa.adaptivetau", (DL_FUNC)&adaptiveTau, 10},
+        {"ssa.adaptivetau", (DL_FUNC)&simAdaptiveTau, 10},
+        {"ssa.exact", (DL_FUNC)&simExact, 5},
         {NULL,NULL, 0}
     };
 
@@ -1020,5 +1257,5 @@ extern "C" {
     {
         R_registerRoutines(dll,NULL,callMethods,NULL,NULL);
     }
-
+    */
 }
