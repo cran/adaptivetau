@@ -27,7 +27,7 @@ Fundamentally, stochastic effects become critical to take into account when the 
   \item (evolution) When a new mutation arises in a population of size $N$, it will eventually be either lost (reaching 0\% frequency) or fix (reaching 100\% frequency).   If the allele is selectively neutral, then with probability $(N-1)/N$, the stochastic process of genetic drift will lead to the new allele disappearing from the population instead of reaching fixation \citep{Kim57}.
   \item (epidemiology) In general, emerging zoonotic infections are poorly adapted to humans and thus unlikely to be transmitted from the initial infected person to significantly more people.  However, continued contact between humans and an animal reservoir will give the pathogen more chances to become human adapted, leading to a larger epidemic \citep{LGP+09}.
 \end{enumerate}
-Crucially, these stochastic processes are all Markovian --- the future state of the process, conditional on the present state, is independent of the past.
+Crucially, these stochastic processes are all Markovian --- the future state of the process depends only on the present state (i.e., it is independent of the history).
 
 Here, we focus on simulating trajectories from a continuous-time Markov process for which the transition rates are not a function of time (i.e.\ time-homogeneous).  The straightforward (and exact) method of simulating such a process requires many iterations of 1) drawing a random ex\-po\-nen\-tial\-ly-dis\-tri\-buted waiting time until the next transition and 2) randomly selecting the identity of the transition, weighted by the relative transition rates.  This solution, which is known as the Gillespie algorithm in the chemical physics literature \citep{Gil76}, becomes impractical as any one transition rate grows large.  Instead, models
 with larger transition rates require an approximate approach that increases simulation speed while still maintaining reasonable accuracy.  One way to perform this approximation is to reduce the number of iterations by treating transition rates as constant over time periods for which this approximation leads to little error.
@@ -77,12 +77,13 @@ transitions = cbind(c( 1, 0), # prey grow (+1 prey, no change predator)
 Next we write a function to calculate the rates of each transition ($\lambda$):
 <<>>=
 lvRateF <- function(x, params, t) {
-  return(c(params$r * x["prey"],              # rate of prey growing
-           params$beta * x["prey"]*x["pred"], # rate of predation
-           params$delta * x["pred"]))         # rate of predators dying
+  return(c(params$r * x["prey"],               # rate of prey growing
+           params$beta * x["prey"]*x["pred"] * # rate of predation
+             (x["pred"] >= 2),
+           params$delta * x["pred"]))          # rate of predators dying
 }
-@ 
-Finally we run the simulations setting initial conditions (\texttt{init.values}), parameters (\texttt{params}), and the simulation stop time (\texttt{tf}):
+@
+Note that the conditional \texttt{(x["pred"] >= 2)} above ensures that the predation transition can never create a negative number of prey (since 2 are subtracted).  Finally we run the simulations setting initial conditions (\texttt{init.values}), parameters (\texttt{params}), and the simulation stop time (\texttt{tf}):
 <<>>=
 set.seed(4) # set random number generator seed to be reproducible
 simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
@@ -134,7 +135,7 @@ With the parameters and initial conditions used in this example, the determinist
 \section*{Example 2: genetic drift}
 Consider a Moran model for the evolution of a population of size $N$ in which we track the number of individuals with a novel mutant allele ($X$) versus the number of individuals with the ancestral allele ($N-X$).  Since the population size is a constant, this model has only one independent variable ($X$).  Under the Moran model, evolution occurs when one individual is chosen to reproduce and, simultaneously, one individual is chosen to die.  Thus the model allows only ``one-step'' transitions in which $X$ either decreases or increases by one ($\Delta_1=[-1]$ and $\Delta_2=[+1]$).  Both transitions occur at the same rate: $\lambda_1 = \lambda_2 = \frac{X}{N}\frac{N-X}{N}$.
 
-Although this model has only one variable, we have two ``critical values'' for this variable: $X=0$ and $X=N$ are both absorbing boundaries.  The adaptive tau-leaping approximation is careful near the $X=0$ boundary, but it is unaware of other critical values.  We work around this problem by creating an additional variable for the ancestral allele, such that $X_2 = 0$ when $X_1 = N$.
+Although this model has only one variable, we have two ``critical values'' for this variable: $X=0$ and $X=N$ are both absorbing boundaries.  The adaptive tau-leaping approximation always careful near 0 (the $X=0$ boundary), but it is unaware of other critical values.  We work around this problem by creating an additional variable for the ancestral allele, such that $X_2 = 0$ when $X_1 = N$.
 <<>>=
 library(adaptivetau)
 transitions = cbind(c(-1,+1), # num individuals w/ derived allele decreases
@@ -142,6 +143,7 @@ transitions = cbind(c(-1,+1), # num individuals w/ derived allele decreases
 driftRateF <- function(x, params, t) {
   rep(x[1] * x[2]/sum(x)^2, 2)
 }
+set.seed(1) # set random number generator seed to be reproducible
 r=ssa.adaptivetau(c(500,500), transitions, driftRateF, params=NULL, tf=Inf)
 @ 
 Simulation results are plotted in Figure \ref{fig-drift}.  The above code also demonstrates an alternative stopping condition for the simulation: when \texttt{tf=Inf}, the simulation will run until all transition rates are 0 (in this case, when either allele fixes in the population).
@@ -169,8 +171,9 @@ First, the differential equation representation:
 \]
 where we assume transmissible contact with infected animals occurs at a constant rate $z$, human-to-human transmissible contact occurs with rates $\beta_{1,2}$, human adaptation occurs with rate $\mu$, death due to infection with rates $\delta_{1,2}$ and recovery with rates $\gamma_{1,2}$.
 
-Now we will make a stochastic version of this model in R.  Since this model has a few more variable than our earlier examples, we will use the \texttt{ssa.maketran} helper function which eases creation of the transition matrix:
+Now we will make a stochastic version of this model in R.  Since this model has a few more variable than our earlier examples, we will use the \texttt{ssa.maketrans} helper function which eases creation of the transition matrix:
 <<>>=
+library(adaptivetau)
 init.values = c(
   S = 10^5, # susceptible humans
   I1 = 0,   # infected humans

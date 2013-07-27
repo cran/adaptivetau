@@ -1,3 +1,19 @@
+----------------------------
+Version 1.1 - 27 July 2013
+----------------------------
+  - Fix use of "eval" by using R_EmptyEnv instead of NULL.
+  - Revert memory leak prevention / error handling code due to not
+    being part of the public R API (as pointed out by Brian Ripley,
+    only public API is allowed in CRAN).  Unfortunately interrupting
+    execution will now almost certainly lead to memory leaking.
+
+----------------------------
+Version 1.0-1 - 27 Sept 2012
+----------------------------
+  - Fixed validity check that aborts on non-integer initial conditions
+    (previously was being too permissive).
+  - removed .Rhistory file accidently left under /vignettes directory
+
 ------------------------
 Version 1.0 - 9 Apr 2012
 ------------------------
