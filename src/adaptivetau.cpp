@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 271 2013-07-28 01:30:43Z pjohnson $
+/* $Id: adaptivetau.cpp 276 2013-11-11 15:22:51Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -29,7 +29,6 @@
 #include <iostream>
 #include <vector>
 #include <limits>
-#include <cmath>
 #include <sstream>
 #include <stdexcept>
 
@@ -339,7 +338,7 @@ protected:
                     throwError("negative variable: " << i+1 << " is " <<
                                m_X[i] << " (check rate function "
                                "and/or transition matrix)");
-                } else if (isnan(m_X[i])) {
+                } else if (ISNAN(m_X[i])) {
                     throwError("NaN variable: " << i+1 << " is " <<
                                m_X[i] << " (check rate function "
                                "and/or transition matrix)");
@@ -364,7 +363,7 @@ protected:
         }
         if (m_ExtraChecks) {
             for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-                if (isnan(m_Rates[j])) {
+                if (ISNAN(m_Rates[j])) {
                     throwError("invalid rate function -- rate for transition "
                                << j+1 << "is not a number (NA/NaN)! (check "
                                "for divison by zero or similar)");

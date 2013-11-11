@@ -1,4 +1,14 @@
 ----------------------------
+Version 1.1-1 - 11 Nov 2013
+----------------------------
+  - Remove #include <cmath>, which appears (?) to have been
+    unnecessary and causes a conflict when using isnan with -std=c++11
+    and "using namespace std".
+  - Replace "isnan" (from standard) with "ISNAN" (R macro to ensure
+    portability)
+  - also remove stray files from vignette directory
+
+----------------------------
 Version 1.1 - 27 July 2013
 ----------------------------
   - Fix use of "eval" by using R_EmptyEnv instead of NULL.

@@ -1,8 +1,8 @@
 Package: adaptivetau
 Type: Package
 Title: Tau-leaping stochastic simulation
-Version: 1.1
-Date: 2013-07-27
+Version: 1.1-1
+Date: 2013-11-11
 Author: Philip Johnson
 Maintainer: Philip Johnson <plfjohnson@emory.edu>
 Depends: R (>= 2.10.1)
@@ -14,7 +14,7 @@ Description: Implements adaptive tau leaping to approximate the
         National Science Foundation DBI-0906041 to Philip Johnson and
         National Institutes of Health R01-AI049334 to Rustom Antia.
 License: GPL (>= 3)
-Packaged: 2013-07-28 01:31:04 UTC; pjohnson
+Packaged: 2013-11-11 15:23:03 UTC; pjohnson
 NeedsCompilation: yes
 Repository: CRAN
-Date/Publication: 2013-07-28 08:22:34
+Date/Publication: 2013-11-11 16:46:28
