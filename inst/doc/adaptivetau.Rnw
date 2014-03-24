@@ -68,22 +68,22 @@ Now we can write this model in R for use with
 <<>>=
 library(adaptivetau)
 @ 
-First we specify our transitions ($\Delta$):
+First we specify our transitions ($\Delta$) in sparse form, whereby we only give non-zero entries in the transition matrix (note we could also supply the entire matrix in matrix form; see the `ssa.adaptivetau' help page for details):
 <<>>=
-transitions = cbind(c( 1, 0), # prey grow (+1 prey, no change predator)
-                    c(-2, 1), # predation (-2 prey, +1 predator)
-                    c( 0,-1)) # predator dies (no change prey, -1 predator)
+transitions = list(c(prey = +1),            # trans 1: prey grows
+                   c(prey = -2, pred = +1), # trans 2: predation
+                   c(pred = -1))            # trans 3: predator dies
 @ 
 Next we write a function to calculate the rates of each transition ($\lambda$):
 <<>>=
 lvRateF <- function(x, params, t) {
   return(c(params$r * x["prey"],               # rate of prey growing
            params$beta * x["prey"]*x["pred"] * # rate of predation
-             (x["pred"] >= 2),
+             (x["prey"] >= 2),
            params$delta * x["pred"]))          # rate of predators dying
 }
 @
-Note that the conditional \texttt{(x["pred"] >= 2)} above ensures that the predation transition can never create a negative number of prey (since 2 are subtracted).  Finally we run the simulations setting initial conditions (\texttt{init.values}), parameters (\texttt{params}), and the simulation stop time (\texttt{tf}):
+Note that the conditional \texttt{(x["prey"] >= 2)} above ensures that the predation transition can never create a negative number of prey (since 2 are subtracted).  Finally we run the simulations setting initial conditions (\texttt{init.values}), parameters (\texttt{params}), and the simulation stop time (\texttt{tf}):
 <<>>=
 set.seed(4) # set random number generator seed to be reproducible
 simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
@@ -135,7 +135,7 @@ With the parameters and initial conditions used in this example, the determinist
 \section*{Example 2: genetic drift}
 Consider a Moran model for the evolution of a population of size $N$ in which we track the number of individuals with a novel mutant allele ($X$) versus the number of individuals with the ancestral allele ($N-X$).  Since the population size is a constant, this model has only one independent variable ($X$).  Under the Moran model, evolution occurs when one individual is chosen to reproduce and, simultaneously, one individual is chosen to die.  Thus the model allows only ``one-step'' transitions in which $X$ either decreases or increases by one ($\Delta_1=[-1]$ and $\Delta_2=[+1]$).  Both transitions occur at the same rate: $\lambda_1 = \lambda_2 = \frac{X}{N}\frac{N-X}{N}$.
 
-Although this model has only one variable, we have two ``critical values'' for this variable: $X=0$ and $X=N$ are both absorbing boundaries.  The adaptive tau-leaping approximation always careful near 0 (the $X=0$ boundary), but it is unaware of other critical values.  We work around this problem by creating an additional variable for the ancestral allele, such that $X_2 = 0$ when $X_1 = N$.
+Although this model has only one variable, we have two ``critical values'' for this variable: $X=0$ and $X=N$ are both absorbing boundaries.  The adaptive tau-leaping approximation is always careful near 0 (the $X=0$ boundary), but it is unaware of other critical values.  We work around this problem by creating an additional variable for the ancestral allele, such that $X_2 = 0$ when $X_1 = N$.
 <<>>=
 library(adaptivetau)
 transitions = cbind(c(-1,+1), # num individuals w/ derived allele decreases
@@ -171,7 +171,7 @@ First, the differential equation representation:
 \]
 where we assume transmissible contact with infected animals occurs at a constant rate $z$, human-to-human transmissible contact occurs with rates $\beta_{1,2}$, human adaptation occurs with rate $\mu$, death due to infection with rates $\delta_{1,2}$ and recovery with rates $\gamma_{1,2}$.
 
-Now we will make a stochastic version of this model in R.  Since this model has a few more variable than our earlier examples, we will use the \texttt{ssa.maketrans} helper function which eases creation of the transition matrix:
+Now we will make a stochastic version of this model in R:
 <<>>=
 library(adaptivetau)
 init.values = c(
@@ -180,14 +180,14 @@ init.values = c(
   I2 = 0,   # infected humans
   R = 0)    # recovered (and immune) humans
 
-transitions = ssa.maketrans(names(init.values),
-  rbind('S', -1, 'I1', +1), # infection (animal-adapted strain)
-  rbind('S', -1, 'I2', +1), # infection (human-adapted strain)
-  rbind('I1', -1),          # death due to infection
-  rbind('I2', -1),
-  rbind('I1', -1, 'R', +1), # recovery
-  rbind('I2', -1, 'R', +1)
-  )
+transitions = list(
+    c(S = -1, I1 = +1), # infection (animal-adapted strain)
+    c(S = -1, I2 = +1), # infection (human-adapted strain)
+    c(I1 = -1),         # death due to infection
+    c(I2 = -1),
+    c(I1 = -1, R = +1), # recovery
+    c(I2 = -1, R = +1)
+    )
 
 SIRrateF <- function(x, p, t) {
   return(c(x["S"] * (p$zoonotic + p$beta[1]*x["I1"]), # infection rate

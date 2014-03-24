@@ -15,9 +15,9 @@ library(adaptivetau)
 ###################################################
 ### code chunk number 3: adaptivetau.Rnw:72-75
 ###################################################
-transitions = cbind(c( 1, 0), # prey grow (+1 prey, no change predator)
-                    c(-2, 1), # predation (-2 prey, +1 predator)
-                    c( 0,-1)) # predator dies (no change prey, -1 predator)
+transitions = list(c(prey = +1),            # trans 1: prey grows
+                   c(prey = -2, pred = +1), # trans 2: predation
+                   c(pred = -1))            # trans 3: predator dies
 
 
 ###################################################
@@ -26,7 +26,7 @@ transitions = cbind(c( 1, 0), # prey grow (+1 prey, no change predator)
 lvRateF <- function(x, params, t) {
   return(c(params$r * x["prey"],               # rate of prey growing
            params$beta * x["prey"]*x["pred"] * # rate of predation
-             (x["pred"] >= 2),
+             (x["prey"] >= 2),
            params$delta * x["pred"]))          # rate of predators dying
 }
 
@@ -107,14 +107,14 @@ init.values = c(
   I2 = 0,   # infected humans
   R = 0)    # recovered (and immune) humans
 
-transitions = ssa.maketrans(names(init.values),
-  rbind('S', -1, 'I1', +1), # infection (animal-adapted strain)
-  rbind('S', -1, 'I2', +1), # infection (human-adapted strain)
-  rbind('I1', -1),          # death due to infection
-  rbind('I2', -1),
-  rbind('I1', -1, 'R', +1), # recovery
-  rbind('I2', -1, 'R', +1)
-  )
+transitions = list(
+    c(S = -1, I1 = +1), # infection (animal-adapted strain)
+    c(S = -1, I2 = +1), # infection (human-adapted strain)
+    c(I1 = -1),         # death due to infection
+    c(I2 = -1),
+    c(I1 = -1, R = +1), # recovery
+    c(I2 = -1, R = +1)
+    )
 
 SIRrateF <- function(x, p, t) {
   return(c(x["S"] * (p$zoonotic + p$beta[1]*x["I1"]), # infection rate

@@ -15,27 +15,25 @@ ssa.compile <- function(f) {
 ssa.adaptivetau <-
 function(init.values, transitions, rateFunc, params, tf,
          jacobianFunc = NULL, maxTauFunc = NULL,
-         deterministic = FALSE,
+         deterministic = NULL, halting = NULL,
          relratechange=rep(1, length(init.values)),
          tl.params = NULL) {
-  storage.mode(transitions) = "integer";
   return(.Call('simAdaptiveTau', PACKAGE='adaptivetau',
                init.values, transitions,
                ssa.compile(rateFunc), ssa.compile(jacobianFunc),
-               params, tf, deterministic,
+               params, tf, deterministic, halting,
                relratechange, tl.params, ssa.compile(maxTauFunc)))
 }
 
 ssa.exact <-
 function(init.values, transitions, rateFunc, params, tf) {
-  storage.mode(transitions) = "integer";
   return(.Call('simExact', PACKAGE='adaptivetau',
                init.values, transitions, ssa.compile(rateFunc), params, tf))
 }
 
 ssa.maketrans <- function(variables, ...) {
-  trans = list(...)
-  if (length(trans) == 0) {
+  userTrans = list(...)
+  if (length(userTrans) == 0) {
     stop("no transitions passed into ssa.maketrans!")
   }
   if (length(variables) == 1  &&  is.numeric(variables)) {
@@ -47,40 +45,37 @@ ssa.maketrans <- function(variables, ...) {
          "either a vector of variable names or the number of variables")
   }
 
-  ## initialize matrix to size (numVariables x num transitions) by
-  ## summing over all elements of trans (which may themselves be
-  ## matrices)
-  ## per convention in the tau-leaping papers, columns represent
-  ## transitions and rows represent variables
-  m = matrix(0, nrow=numVariables, ncol=sum(sapply(trans,ncol)))
-  if (is.character(variables)) {
-    rownames(m) = variables;
-  }
+  allTrans = vector("list", length = sum(sapply(userTrans, function(x) (
+                                if (is.matrix(x)) ncol(x) else 1))));
 
-  ## expand out the sparse transitions
   trI = 0
-  for (i in 1:length(trans)) {
-    x = trans[[i]]
+  for (i in 1:length(userTrans)) {
+    x = userTrans[[i]]
+    if (length(x) == 1  &&  is.na(x)) {
+        trI = trI + 1
+        allTrans[[trI]] = integer(0)
+        next
+    }
     idx = (1:(nrow(x) %/% 2))*2-1 #indices of variables
     mag = idx + 1                 #indices of magnitudes
-    for (j in 1:ncol(x)) {
+    for (j in seq_len(ncol(x))) {
       trI = trI + 1
       if (is.numeric(x)) {
         if (any(x[idx,j] < 1  |  x[idx,j] > numVariables)) {
           stop("variable index outside valid range (1:numVariables)")
         }
-        m[x[idx,j], trI] = x[mag,j];
+        allTrans[[trI]] = structure(as.integer(x[mag,j]), names = x[idx,j])
       } else if (is.character(x)) {
-        if (any(!(x[idx,j] %in% rownames(m)))) {
+        if (any(!(x[idx,j] %in% variables))) {
           stop("unknown variable(s): ",
-               paste(x[idx,j][!(x[idx,j] %in% rownames(m))], collapse=", "))
+               paste(x[idx,j][!(x[idx,j] %in% variables)], collapse=", "))
         }
-        m[x[idx,j], trI] = as.double(x[mag,j])
+        allTrans[[trI]] = structure(as.integer(x[mag,j]), names = x[idx,j])
       } else {
         stop("transitions passed to ssa.maketrans must be integer or character")
       }
     }
   }
 
-  return(m)
+  allTrans
 }

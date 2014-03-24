@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 276 2013-11-11 15:22:51Z pjohnson $
+/* $Id: adaptivetau.cpp 290 2014-03-24 15:32:30Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -38,6 +38,8 @@
 #include <R_ext/Lapack.h>
 #include <Rmath.h>
 
+#include "Rwrappers.h"
+
 using namespace std;
 
 enum EStepType {
@@ -56,42 +58,97 @@ const bool debug = false;
 
 class CStochasticEqns {
 public:
-    CStochasticEqns(SEXP initVal, int *nu, unsigned int numTrans,
+    CStochasticEqns(SEXP initVal, SEXP nu,
                     SEXP rateFunc, SEXP rateJacobianFunc,
                     SEXP params, double* changeBound, SEXP maxTauFunc,
-                    SEXP detTrans) {
+                    SEXP detTrans, SEXP haltTrans) {
         // copy initial values into new vector (keeping in SEXP vector
         // allows easy calling of R function to calculate rates)
         m_NumStates = length(initVal);
         SEXP x;
         PROTECT(x = allocVector(REALSXP, m_NumStates));
-        copyVector(x, initVal);
+        copyVector(x, coerceVector(initVal,REALSXP));
         if (isNull(getAttrib(initVal, R_NamesSymbol))) {
             m_VarNames = NULL;
         } else {
             SEXP namesO = getAttrib(initVal, R_NamesSymbol);
-            PROTECT(m_VarNames = allocVector(VECSXP, length(namesO)));
+
+            PROTECT(m_VarNames = allocVector(STRSXP, length(namesO)));
 
             copyVector(m_VarNames, namesO);
             setAttrib(x, R_NamesSymbol, m_VarNames);
         }
         m_X = REAL(x);
 
-        // copy full-size Nu matrix into sparse matrix
-        m_Nu.resize(numTrans);
-        for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-            for (unsigned int j = 0;  j < numTrans;  ++j) {
-                if (nu[j*m_NumStates + i] != 0) {
-                    m_Nu[j].push_back(SChange(i, nu[j*m_NumStates + i]));
+        // copy Nu matrix into my own sparse matrix data structure
+        if (isMatrix(nu)) { //old matrix data structure
+            CRMatrix<int> mat(coerceVector(nu,INTSXP), true);
+            m_Nu.resize(mat.ncol());
+            for (unsigned int i = 0;  i < mat.nrow();  ++i) {
+                for (unsigned int j = 0;  j < mat.ncol();  ++j) {
+                    if (mat(i,j) != 0) {
+                        SChange s;
+                        s.m_State = i; s.m_Mag = mat(i,j);
+                        m_Nu[j].push_back(s);
+                    }
+                }
+            }
+        } else { //list (newer, sparse data structure)
+            CRList list(nu);
+            m_Nu.resize(list.size());
+            for (unsigned int j = 0;  j < list.size();  ++j) {
+                if (!isInteger(list[j])  &&  !isReal(list[j])) {
+                    throwError("the sparse transition matrix representation "
+                               "must be a list of either integer or double "
+                               "vectors.");
+                }
+                const CRVector<int> trans(coerceVector(list[j],INTSXP), true);
+                m_Nu[j].resize(trans.size());
+                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
+                    short int state = -1;
+                    const char *stateStr = trans.GetName(i);
+                    if (strcmp(stateStr, "") == 0) {
+                        throwError("transition matrix contains values without "
+                                   "a corresponding state variable.");
+                    }
+                    if (m_VarNames != NULL) {
+                        for (state = 0;  state < length(m_VarNames)  &&
+                                 strcmp(CHAR(STRING_PTR(m_VarNames)[state]),
+                                        stateStr) != 0;
+                             ++state);
+                    }
+                    if (state < 0  ||  state >= m_NumStates) {
+                        istringstream iss(stateStr);
+                        iss >> state;
+                        if (!iss  ||  !iss.eof()) {
+                            state = -1;
+                        } else {
+                            --state; //switch from 1-based to 0-based
+                        }
+                    }
+                    if (state < 0  ||  state >= m_NumStates) {
+                        throwError("transition matrix references non-existent "
+                                   "state variable '" << stateStr << "'");
+                    }
+                    m_Nu[j][i].m_State = state;
+                    m_Nu[j][i].m_Mag = trans[i];
                 }
             }
         }
-        m_TransCats.resize(numTrans, eNoncritical);
+        m_TransCats.resize(m_Nu.size(), eNormal);
 
         // potentially flag some transitions as "deterministic"
-        if (detTrans  &&  !isNull(detTrans)) {
-            x_SetDeterministic(LOGICAL(detTrans), length(detTrans));
+        x_SetCat(detTrans, eDeterministic);
+        if (m_TransByCat[eDeterministic].size() == m_TransCats.size()) {
+            throwError("At least one transition must be stochastic (all "
+                       "transitions are currently flagged as "
+                       "deterministic).");
         }
+
+        // potentially flag some transitions as "halting" (which are
+        // always critical)
+        x_SetCat(haltTrans, eHalting);
+        m_TransByCat[eCritical] = m_TransByCat[eHalting];
 
         // needed for ITL
         x_IdentifyBalancedPairs();
@@ -126,11 +183,12 @@ public:
 
         //useful additional parameters
         m_ExtraChecks = true;
+        m_VerboseTracing = 0;
         m_RateChangeBound = changeBound;
         if (!maxTauFunc  ||  isNull(maxTauFunc)) {
             m_MaxTauFunc = NULL;
         } else {
-            PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params,s_time));
+            PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params, s_time));
         }
 
         //check initial conditions to make sure legit
@@ -140,12 +198,19 @@ public:
                            " must be positive (currently " << m_X[i] << ")");
             }
             if (!m_RealValuedVariables[i]  &&  (m_X[i] - trunc(m_X[i]) > 1e-5)){
-                throwError("initial value for variable " << i+1 <<
-                           " must be an integer (currently " << m_X[i] << ")");
+                if (m_VarNames != NULL) {
+                    throwError("initial value for variable " << i+1 <<
+                               " ('"<<CHAR(STRING_PTR(m_VarNames)[i])<<"') " <<
+                               "must be an integer (currently " << m_X[i] << ")");
+                } else {
+                    throwError("initial value for variable " << i+1 <<
+                               " must be an integer (currently " << m_X[i] << ")");
+                }
             }
         }
         
         *m_T = 0;
+        m_LastTransition = -1;
         m_PrevStepType = eExact;
         GetRNGstate();
     }
@@ -198,6 +263,14 @@ public:
                                CHAR(STRING_PTR(names)[i]) << "'");
                 }
                 m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
+            } else if (strcmp("verbose",
+                              CHAR(STRING_PTR(names)[i])) == 0) {
+                if (!isInteger(VECTOR_ELT(list, i))  ||
+                    length(VECTOR_ELT(list, i)) != 1) {
+                    throwError("invalid value for parameter '" <<
+                               CHAR(STRING_PTR(names)[i]) << "'");
+                }
+                m_VerboseTracing = INTEGER(VECTOR_ELT(list, i))[0];
             } else {
                 warning("ignoring unknown parameter '%s'",
                         CHAR(STRING_PTR(names)[i]));
@@ -221,7 +294,10 @@ public:
         //add initial conditions to time series
         m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
         //main loop
-        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)) {
+        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)  &&
+               (m_LastTransition < 0  ||
+                m_TransCats[m_LastTransition] != eHalting)) {
+            x_UpdateRates();
             x_SingleStepATL(tF);
             if (++c % 10 == 0  &&  checkUserInterrupt()) {
                 throwError("simulation interrupted by user at time " << *m_T
@@ -237,11 +313,13 @@ public:
         unsigned int c = 0;
         //add initial conditions to time series
         m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
+        m_LastTransition = -1;
         //main loop
-        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)) {
+        while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)  &&
+               (m_LastTransition < 0  ||
+                m_TransCats[m_LastTransition] != eHalting)) {
             x_UpdateRates();
             x_SingleStepExact(tF);
-            m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
             if (++c % 10 == 0  &&  checkUserInterrupt()) {
                 throwError("simulation interrupted by user at time " << *m_T
                            << " after " << c << " time steps.");
@@ -251,6 +329,21 @@ public:
         //no harm in extra calls to PutRNGstate and avoids potential
         //problems with PROTECTing return value from GetTimeSeriesSEXP
         PutRNGstate();
+    }
+
+    SEXP GetResult(void) const {
+        if (m_TransByCat[eHalting].size() == 0) {
+            return GetTimeSeriesSEXP();
+        } else {
+            CRList res(2, true);
+            res.SetSEXP(0, GetTimeSeriesSEXP(), "dynamics");
+            CRVector<int> lastTrans(1, false);
+            lastTrans[0] = (m_LastTransition < 0  ||
+                            m_TransCats[m_LastTransition] != eHalting) ?
+                NA_INTEGER : m_LastTransition+1;
+            res.SetSEXP(1, lastTrans, "haltingTransition");
+            return res;
+        }
     }
 
     SEXP GetTimeSeriesSEXP(void) const {
@@ -287,17 +380,18 @@ public:
 
 protected:
     enum ETransCat {
+        eNormal = 0,
         eCritical,
-        eNoncritical,
-        eDeterministic
+        eDeterministic,
+        eHalting
     };
     typedef vector<ETransCat> TTransCats;
+    typedef vector<int> TTransList;
     typedef vector<pair<unsigned int, unsigned int> > TBalancedPairs;
     typedef vector<bool> TBools;
     typedef double* TStates;
     typedef double* TRates;
     struct SChange {
-        SChange(short int s, short int m) : m_State(s), m_Mag(m) {}
         short int m_State;
         short int m_Mag;
     };
@@ -306,7 +400,7 @@ protected:
         STimePoint(double t, double *x, int n) {
             m_T = t;
             m_X = new double[n];
-            memcpy(m_X, x, n*sizeof(*x));
+            memcpy(m_X, x, n*sizeof(double));
         }
         double m_T;
         double *m_X;
@@ -323,12 +417,12 @@ protected:
 protected:
     void x_IdentifyBalancedPairs(void);
     void x_IdentifyRealValuedVariables(void);
-    void x_SetDeterministic(int *det, unsigned int n);
+    void x_SetCat(SEXP trans, ETransCat cat);
 
     void x_AdvanceDeterministic(double deltaT, bool clamp = false);
     void x_SingleStepExact(double tf);
-    bool x_SingleStepETL(double tau);
-    bool x_SingleStepITL(double tau);
+    void x_SingleStepETL(double tau);
+    void x_SingleStepITL(double tau);
     void x_SingleStepATL(double tf);
 
     void x_UpdateRates(void) {
@@ -346,8 +440,14 @@ protected:
             }
         }
 
-        //not sure if this protect/unprotect block is necessary, but
-        //seems better to err on the safe side
+        //sigh.  Cover ourselves in case rateFunc code messes with
+        //RNGs (which really should NOT be the case -- we rely on the
+        //rate functions being deterministic!), but ran into this
+        //problem when using a Rcpp rate function (which adds
+        //arbitrary calls to Get/Put RNG).
+        PutRNGstate(); 
+
+        // make sure our rates are protected!
         if (m_Rates != NULL) { 
             UNPROTECT(1);
         }
@@ -356,10 +456,9 @@ protected:
         m_Rates = REAL(res);
 
         if ((unsigned int) length(res) != m_Nu.size()) {
-            throwError("invalid rate function -- returned number of rates is "
-                       "not the same as specified by the transition matrix! "
-                       "(" << length(res) << " versus " << m_Nu.size() <<
-                       ")");
+            throwError("invalid rate function -- returned number of rates ("
+                       << length(res) << ") is not the same as specified by "
+                       "the transition matrix (" << m_Nu.size() << ")!");
         }
         if (m_ExtraChecks) {
             for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
@@ -408,13 +507,12 @@ protected:
         vector <double> mu(m_NumStates, 0);
         vector <double> sigma(m_NumStates, 0);
 
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] != eCritical) {
-                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                    const SChange &c = m_Nu[j][i];
-                    mu[c.m_State] += c.m_Mag * m_Rates[j];
-                    sigma[c.m_State] += c.m_Mag * c.m_Mag * m_Rates[j];
-                }
+        for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+             j != m_TransByCat[eNormal].end();  ++j) {
+            for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
+                const SChange &c = m_Nu[*j][i];
+                mu[c.m_State] += c.m_Mag * m_Rates[*j];
+                sigma[c.m_State] += c.m_Mag * c.m_Mag * m_Rates[*j];
             }
         }
         //cerr << "-=| mu:";
@@ -461,12 +559,13 @@ protected:
 
         vector<double> mu(m_NumStates, 0);
         vector<double> sigma(m_NumStates, 0);
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] != eCritical  &&  !equil[j]) {
-                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                    const SChange &c = m_Nu[j][i];
-                    mu[c.m_State] += c.m_Mag * m_Rates[j];
-                    sigma[c.m_State] += c.m_Mag * c.m_Mag * m_Rates[j];
+        for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+             j != m_TransByCat[eNormal].end();  ++j) {
+            if (!equil[*j]) {
+                for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
+                    const SChange &c = m_Nu[*j][i];
+                    mu[c.m_State] += c.m_Mag * m_Rates[*j];
+                    sigma[c.m_State] += c.m_Mag * c.m_Mag * m_Rates[*j];
                 }
             }
         }
@@ -493,7 +592,9 @@ private:
                         //user-supplied rate function. Slower, but if
                         //the rate function does have a bug, this will
                         //give a more meaningful error message.
+    int m_VerboseTracing; //trace algorithm verbosely
 
+    // parameters to tau leaping algorithm
     unsigned int m_Ncritical;
     double m_Nstiff;
     double m_Epsilon;
@@ -504,18 +605,22 @@ private:
     double m_MaxTau;
     unsigned int m_MaxSteps;
 
-    TRates m_Rates; // *current* rates (must be updated if m_X changes!)
+    // time-dependent variables
     double *m_T;    // *current* time
-    TBalancedPairs m_BalancedPairs;
-    TBools m_RealValuedVariables;
-    EStepType m_PrevStepType;
+    TStates m_X;    // *current* state variables
+    TRates m_Rates; // *current* rates (must be updated if m_X changes!)
+    EStepType m_PrevStepType; // type of last step
+    int m_LastTransition; // id of transition taken if critical/exact; -1 o.w.
 
-    TStates m_X;              //current state
+    // constant variables
     unsigned int m_NumStates; //total number of states
     SEXP m_VarNames;          //variable names (if any)
-    TTransitions m_Nu;        //state changes caused by transition
-    TTransCats m_TransCats; //inc. whether transition is deterministic
-    SEXP m_RateFunc; //R function to calculate rates as f(m_X)
+    TTransitions m_Nu;        //state changes caused by transitions
+    TTransCats  m_TransCats;  //i.e. normal, deterministic, halting
+    TTransList  m_TransByCat[4];//i.e. critical, normal, deterministic, halting
+    TBalancedPairs m_BalancedPairs;
+    TBools m_RealValuedVariables;
+    SEXP m_RateFunc;         //R function to calculate rates as f(m_X)
     SEXP m_RateJacobianFunc; //R function to calculate Jacobian of rates as f(m_X) [optional!]
     double *m_RateChangeBound; //see Cao (2006) for details
     SEXP m_MaxTauFunc; //R function to calculate maximum leap given curr. state
@@ -548,27 +653,36 @@ void CStochasticEqns::x_IdentifyBalancedPairs(void) {
 }
 
 /*---------------------------------------------------------------------------*/
-// PRE : m_Nu initialized, boolean vector flagging transitions as
-// deterministic or not (could be just FALSE and n=1)
-// POST: deterministic flag set where appropriate
-void CStochasticEqns::x_SetDeterministic(int *det, unsigned int n) {
-    if (n != m_Nu.size()  &&  n > 1) {
-        throwError("mismatch between length of logical vector specifying "
-                   "deterministic transitions and total number of transitions");
-    }
-    bool atLeastOneStochastic = false;
-    for (unsigned int i = 0;  i < n;  ++i) {
-        if (det[i]) {
-            m_TransCats[i] = eDeterministic;
-        } else {
-            atLeastOneStochastic = true;
+// PRE : boolean vector flagging transitions as category "cat"
+// POST: appropriate transCats set
+void CStochasticEqns::x_SetCat(SEXP trans, ETransCat cat) {
+    if (!trans  || isNull(trans)) { return; } //NULL may be passed as a flag
+    if (isLogical(trans)) {
+        CRVector<bool> logic(trans);
+        if (logic.size() > m_TransCats.size()) {
+            throwError("length of logical vector specifying deterministic or "
+                       "halting transitions is greater than the total number "
+                       "of transitions!");
+        }
+        for (unsigned int i = 0;  i < logic.size();  ++i) {
+            if (logic[i]) {
+                m_TransCats[i] = cat;
+                m_TransByCat[cat].push_back(i);
+            }
+        }
+    } else {
+        CRVector<int> w(coerceVector(trans, INTSXP), true);
+        for (unsigned int i = 0;  i < w.size();  ++i) {
+            if (w[i] > m_TransCats.size()) {
+                throwError("one of your list(s) of transitions references a "
+                           "transition that doesn't exist (" << w[i] << ") "
+                           "when last transition is " << m_TransCats.size() <<
+                           ")")
+            }
+            m_TransCats[w[i]-1] = cat;
+            m_TransByCat[cat].push_back(w[i]-1);
         }
     }
-    if (!atLeastOneStochastic) {
-        throwError("At least one transition must be stochastic (all "
-                   "transitions are currently flagged as deterministic).");
-    }
-    x_IdentifyRealValuedVariables();
 }
 
 /*---------------------------------------------------------------------------*/
@@ -579,18 +693,10 @@ void CStochasticEqns::x_IdentifyRealValuedVariables(void) {
     m_RealValuedVariables.clear();
     m_RealValuedVariables.resize(m_NumStates, false);
 
-    for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-        if (m_TransCats[j] == eDeterministic) {
-            for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                m_RealValuedVariables[m_Nu[j][i].m_State] = true;
-            }
-        } else {
-            //code below not used since m_Nu matrix is forced to be integers
-            for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                if (m_Nu[j][i].m_Mag - trunc(m_Nu[j][i].m_Mag) > 1e-5) {
-                    m_RealValuedVariables[m_Nu[j][i].m_State] = true;
-                }
-            }
+    for (TTransList::const_iterator j = m_TransByCat[eDeterministic].begin();
+         j != m_TransByCat[eDeterministic].end();  ++j) {
+        for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
+            m_RealValuedVariables[m_Nu[*j][i].m_State] = true;
         }
     }
                     
@@ -602,14 +708,16 @@ void CStochasticEqns::x_IdentifyRealValuedVariables(void) {
 unsigned int CStochasticEqns::x_PickCritical(double critRate) const {
     double r = runif(0,1);
     double d = 0;
-    unsigned int j;
-    for (j = 0;  j < m_Nu.size()  &&  d < r;  ++j) {
-        if (m_TransCats[j] == eCritical) {
-            d += m_Rates[j]/critRate;
+    TTransList::const_iterator j = m_TransByCat[eCritical].begin();
+    while (j != m_TransByCat[eCritical].end()) {
+        d += m_Rates[*j]/critRate;
+        if (d > r) {
+            break;
         }
+        ++j;
     }
     if (!(d >= r)) { throwError("logic error at line " << __LINE__) }
-    return j-1;
+    return *j;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -617,26 +725,14 @@ unsigned int CStochasticEqns::x_PickCritical(double critRate) const {
 // POST: all determinisitic transitions updated by the expected amount
 // (i.e. Euler method); if clamping, then negative variables set to 0.
 void CStochasticEqns::x_AdvanceDeterministic(double deltaT, bool clamp) {
-    if (clamp) {
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eDeterministic) {
-                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                    m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
-                        deltaT;
-                    //clamp at zero if specified
-                    if (m_X[m_Nu[j][i].m_State] < 0) {
-                        m_X[m_Nu[j][i].m_State] = 0;
-                    }
-                }
-            }
-        }
-    } else {
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eDeterministic) {
-                for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                    m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
-                        deltaT;
-                }
+    for (TTransList::const_iterator j = m_TransByCat[eDeterministic].begin();
+         j != m_TransByCat[eDeterministic].end();  ++j) {
+        for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
+            m_X[m_Nu[*j][i].m_State] += m_Nu[*j][i].m_Mag * m_Rates[*j] *
+                deltaT;
+            //clamp at zero if specified
+            if (clamp  &&  m_X[m_Nu[*j][i].m_State] < 0) {
+                m_X[m_Nu[*j][i].m_State] = 0;
             }
         }
     }
@@ -644,8 +740,9 @@ void CStochasticEqns::x_AdvanceDeterministic(double deltaT, bool clamp) {
 
 /*---------------------------------------------------------------------------*/
 // PRE : simulation end time; **transition rates already updated**
-// POST: a *single* transition taken (no approximation necessary)
+// POST: id of transition taken (if none, then -1) & time series updated.
 void CStochasticEqns::x_SingleStepExact(double tf) {
+    m_LastTransition = -1;
     double stochRate = 0;
     double detRate = 0;
     for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
@@ -655,25 +752,16 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
             detRate += m_Rates[j];
         }
     }
-    if (stochRate == 0) {
-        if (detRate == 0) {
-            *m_T = numeric_limits<double>::infinity();
-        } else {
-            double tau = min(1/detRate, tf-*m_T);
-            x_AdvanceDeterministic(tau, true);
-            *m_T += tau;
-        }
-        return;
-    }
 
-    double tau = rexp(1./stochRate);
-    if (tau > tf - *m_T) {
-        tau = tf - *m_T;
-    } else { // only take step if don't go off end
+    double tau = stochRate > 0 ? rexp(1./stochRate) :
+        detRate > 0 ? 1./detRate : tf - *m_T;
+    if (stochRate == 0  ||  tau > tf - *m_T) {
+        tau = tf - *m_T; // step is off end so just advance time
+    } else {
         double r = runif(0,1);
         double d = 0;
-        unsigned int j;
-        for (j = 0;  j < m_Nu.size()  &&  d < r;  ++j) {
+        unsigned int j = 0;
+        for (;  j < m_Nu.size()  &&  d < r;  ++j) {
             if (m_TransCats[j] != eDeterministic) {
                 d += m_Rates[j]/stochRate;
             }
@@ -682,23 +770,31 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
         --j;
 
         //take transition "j"
+        if (m_VerboseTracing >= 1) {
+            REprintf("%f: taking transition #%i\n", *m_T, j+1);
+        }
         for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
             m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag;
         }
+        m_LastTransition = j;
     }
 
     //clamp deterministic at 0, assuming that it is unreasonable to
     //take a smaller step then exact.
     x_AdvanceDeterministic(tau, true);
     *m_T += tau;
+    m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
 }
 
 /*---------------------------------------------------------------------------*/
 // PRE : tau value to use for step, list of "critical" transitions
-// POST: whether single IMPLICIT tau step was successfully taken (m_X
-// updated if so)
+// POST: IMPLICIT tau step taken (m_X updated if so) (or overflow
+// error thrown if tau was too big)
 // NOTE: See equation (7) in Cao et al. (2007)
-bool CStochasticEqns::x_SingleStepITL(double tau) {
+void CStochasticEqns::x_SingleStepITL(double tau) {
+    if (m_VerboseTracing >= 1) {
+        REprintf("%f: taking implicit step of tau = %f\n", *m_T, tau);
+    }
     if (!m_RateJacobianFunc) { throwError("logic error at line " << __LINE__) }
     double *origX = new double[m_NumStates];
     double *origRates = new double[m_NumStates];
@@ -715,17 +811,18 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
 
     // draw (stochastic) number of times each transition will occur
     vector<int> numTransitions(m_Nu.size(), 0);
-    for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-        if (m_TransCats[j] == eNoncritical) {
-            if (m_Rates[j]*tau > 1e8) {
-                //for high rate, use normal to approx poisson.
-                //should basically never yield negative, but just to
-                //be sure, cap at 0
-                numTransitions[j] = max(0.,floor(rnorm(m_Rates[j]*tau, sqrt(m_Rates[j]*tau))));
-            } else {
-                numTransitions[j] = rpois(m_Rates[j]*tau);
-                //cerr << "nt[" << j << "] " << numTransitions[j] << endl;
-            }
+    
+    for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+         j != m_TransByCat[eNormal].end();  ++j) {
+        if (m_Rates[*j]*tau > 1e8) {
+            //for high rate, use normal to approx poisson.
+            //should basically never yield negative, but just to
+            //be sure, cap at 0
+            numTransitions[*j] = max(0.,floor(rnorm(m_Rates[*j]*tau,
+                                                    sqrt(m_Rates[*j]*tau))));
+        } else {
+            numTransitions[*j] = rpois(m_Rates[*j]*tau);
+            //cerr << "nt[" << *j << "] " << numTransitions[*j] << endl;
         }
     }
 
@@ -734,15 +831,14 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
     // Also initialize iterative search for x[t+tau] at expectation (reset m_X)
     double* alpha = new double[m_NumStates];
     memcpy(alpha, m_X, sizeof(double)*m_NumStates);
-    for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-        if (m_TransCats[j] == eNoncritical) {
-            for (unsigned int k = 0;  k < m_Nu[j].size();  ++k) {
-                alpha[m_Nu[j][k].m_State] += m_Nu[j][k].m_Mag * 
-                    (numTransitions[j] - (tau/2)*m_Rates[j]);
-                //reset m_X to expectation as our initial guess
-                m_X[m_Nu[j][k].m_State] += m_Nu[j][k].m_Mag *
-                    (tau/2)*m_Rates[j];
-            }
+    for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+         j != m_TransByCat[eNormal].end();  ++j) {
+        for (unsigned int k = 0;  k < m_Nu[*j].size();  ++k) {
+            alpha[m_Nu[*j][k].m_State] += m_Nu[*j][k].m_Mag * 
+                (numTransitions[*j] - (tau/2)*m_Rates[*j]);
+            //reset m_X to expectation as our initial guess
+            m_X[m_Nu[*j][k].m_State] += m_Nu[*j][k].m_Mag *
+                (tau/2)*m_Rates[*j];
         }
     }
     //expectations may send states negative; clamp!
@@ -798,22 +894,22 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
                 delete[] matrixB;
                 memcpy(m_X, origX, sizeof(double)*m_NumStates);
                 delete[] origX;
-                return false;
+                throw overflow_error("tau too big");
             }
         }
 
         // define matrix A
         double* rateJacobian = x_CalcJacobian();
         memset(matrixA, 0, m_NumStates*m_NumStates*sizeof(double));
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eNoncritical) {
-                for (unsigned int k = 0;  k < m_Nu[j].size();  ++k) {
-                    for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-                        //R stores matrices column-wise
-                        //LAPACK stores matrices row-wise
-                        matrixA[i*m_NumStates + m_Nu[j][k].m_State] +=
-                            m_Nu[j][k].m_Mag * rateJacobian[j*m_NumStates + i];
-                    }
+        for (TTransList::const_iterator j =
+                 m_TransByCat[eNormal].begin();
+             j != m_TransByCat[eNormal].end();  ++j) {
+            for (unsigned int k = 0;  k < m_Nu[*j].size();  ++k) {
+                for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+                    //R stores matrices column-wise
+                    //LAPACK stores matrices row-wise
+                    matrixA[i*m_NumStates + m_Nu[*j][k].m_State] +=
+                        m_Nu[*j][k].m_Mag * rateJacobian[(*j)*m_NumStates + i];
                 }
             }
         }
@@ -831,12 +927,12 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
             matrixB[i] = alpha[i] - m_X[i];
         }
-        for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eNoncritical) {
-                for (unsigned int k = 0;  k < m_Nu[j].size();  ++k) {
-                    matrixB[m_Nu[j][k].m_State] += 
-                        m_Nu[j][k].m_Mag * (tau/2) * m_Rates[j];
-                }
+        for (TTransList::const_iterator j =
+                 m_TransByCat[eNormal].begin();
+             j != m_TransByCat[eNormal].end();  ++j) {
+            for (unsigned int k = 0;  k < m_Nu[*j].size();  ++k) {
+                matrixB[m_Nu[*j][k].m_State] += 
+                    m_Nu[*j][k].m_Mag * (tau/2) * m_Rates[*j];
             }
         }
 
@@ -926,89 +1022,99 @@ bool CStochasticEqns::x_SingleStepITL(double tau) {
     delete[] matrixA;
     delete[] matrixB;
 
-    bool tauTooBig = false;
     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
         if (m_X[i] < 0) {
-            tauTooBig = true;
-            break;
+            memcpy(m_X, origX, sizeof(double)*m_NumStates);
+            delete[] origX;
+            throw overflow_error("tau too big");
         }
         if (!m_RealValuedVariables[i]) {
             m_X[i] = round(m_X[i]);
         }
     }
-    if (tauTooBig) {
-        memcpy(m_X, origX, sizeof(double)*m_NumStates);
-        delete[] origX;
-        return false;
-    }
     delete[] origX;
     *m_T += tau;
-    return true;
 }
 
 /*---------------------------------------------------------------------------*/
 // PRE : tau value to use for step, list of "critical" transitions
-// POST: whether single EXPLICIT tau step was successfully taken (m_X
-// updated if so)
-bool CStochasticEqns::x_SingleStepETL(double tau) {
+// POST: EXPLICIT tau step taken (m_X updated if so) (or overflow
+// error thrown if tau was too big)
+void CStochasticEqns::x_SingleStepETL(double tau) {
+    if (m_VerboseTracing >= 1) {
+        REprintf("%f: taking explicit step of tau = %f\n", *m_T, tau);
+    }
+    if (m_VerboseTracing >= 2) {
+        REprintf("%f:    ", *m_T);
+    }
     double *origX = new double[m_NumStates];
     memcpy(origX, m_X, sizeof(double)*m_NumStates);
-    for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-        if (m_TransCats[j] == eNoncritical) {
-            double k;
-            if (m_Rates[j]*tau > 1e8) {
-                //for high rate, use normal to approx poisson.
-                //should basically never yield negative, but just to
-                //be sure, cap at 0
-                k = max(0.,floor(rnorm(m_Rates[j]*tau, sqrt(m_Rates[j]*tau))));
-            } else {
-                k = rpois(m_Rates[j]*tau);
+    for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+         j != m_TransByCat[eNormal].end();  ++j) {
+        double k;
+        if (m_Rates[*j]*tau > 1e8) {
+            //for high rate, use normal to approx poisson.
+            //should basically never yield negative, but just to
+            //be sure, bound at 0
+            k = max(0.,floor(rnorm(m_Rates[*j]*tau, sqrt(m_Rates[*j]*tau))));
+        } else {
+            k = rpois(m_Rates[*j]*tau);
+        }
+        if (k > 0) {
+            if (m_VerboseTracing >= 2) {
+                REprintf("%fx#%i ", k, *j);
             }
-            for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                m_X[m_Nu[j][i].m_State] +=  k * m_Nu[j][i].m_Mag;
-            }
-        } else if (m_TransCats[j] == eDeterministic) {
-            for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
-                m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag * m_Rates[j] *
-                    tau;
+            for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
+                m_X[m_Nu[*j][i].m_State] +=  k * m_Nu[*j][i].m_Mag;
             }
         }
     }
+    if (m_VerboseTracing >= 2) {
+        REprintf("\n");
+    }
+    x_AdvanceDeterministic(tau);
 
-    bool tauTooBig = false;
     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
         if (m_X[i] < 0) {
-            tauTooBig = true;
-            break;
+            memcpy(m_X, origX, sizeof(double)*m_NumStates);
+            delete[] origX;
+            throw overflow_error("tau too big");
         }
-    }
-    if (tauTooBig) {
-        memcpy(m_X, origX, sizeof(double)*m_NumStates);
-        delete[] origX;
-        return false;
     }
 
     *m_T += tau;
     delete[] origX;
-    return true;
 }
 
 /*---------------------------------------------------------------------------*/
-// PRE : time at which to end simulation
+// PRE : time at which to end simulation; **transition rates already updated**
 // POST: single adaptive tau leaping step taken & time series updated.
 // Implemented from Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical
 // Physics (2007).
 void CStochasticEqns::x_SingleStepATL(double tf) {
-    x_UpdateRates();
+    m_LastTransition = -1;
     EStepType stepType;
 
     //identify "critical" transitions
     double criticalRate = 0;
     double noncritRate = 0;
     {
+        for (TTransList::const_iterator j =
+                 m_TransByCat[eDeterministic].begin();
+             j != m_TransByCat[eDeterministic].end();  ++j) {
+            noncritRate += m_Rates[*j];
+        }
+        for (TTransList::const_iterator j =
+                 m_TransByCat[eHalting].begin();
+             j != m_TransByCat[eHalting].end();  ++j) {
+            criticalRate += m_Rates[*j];
+        }
+
+        //reset (lop off) all non-halting criticals
+        m_TransByCat[eCritical].resize(m_TransByCat[eHalting].size());
+        m_TransByCat[eNormal].clear();
         for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
-            if (m_TransCats[j] == eDeterministic) {
-                noncritRate += m_Rates[j];
+            if (m_TransCats[j] != eNormal) {
                 continue;
             }
             unsigned int minTimes = numeric_limits<unsigned int>::max();
@@ -1019,11 +1125,11 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 }
             }
             if (minTimes < m_Ncritical) {
-                m_TransCats[j] = eCritical;
                 criticalRate += m_Rates[j];
+                m_TransByCat[eCritical].push_back(j);
             } else {
-                m_TransCats[j] = eNoncritical;
                 noncritRate += m_Rates[j];
+                m_TransByCat[eNormal].push_back(j);
             }
         }
     }
@@ -1077,39 +1183,44 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                     x_UpdateRates();
                 }
                 x_SingleStepExact(tf);
-                if (*m_T == numeric_limits<double>::infinity()) {
-                    //signal that rates = 0
-                    *m_T = tf;
-                }
-                if (debug) {
-                    cerr << *m_T << " -- ";
+                if (m_VerboseTracing >= 2) {
+                    REprintf("%f -- ", *m_T);
                     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-                        cerr << m_X[i] << " ";
+                        REprintf("%f ", m_X[i]);
                     }
-                    cerr << endl;
+                    REprintf("\n");
                 }
-                m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
+                if (m_LastTransition >= 0  &&
+                    m_TransCats[m_LastTransition] == eHalting) {
+                    return;
+                }
             }
         } else {
-            tau2 = (criticalRate == 0) ? numeric_limits<double>::infinity() :
-                rexp(1./criticalRate);
-            if (stepType == eExplicit  ||
-                (tau1 > tau2  &&  stepType == eImplicit  &&  tau2 <= tauEx)) {
-                if (debug) {
-                    cerr << "going explicit w/ tau = " << min(tau1, tau2) << endl;
+            try { //catch exception if tauTooBig
+                tau2 = (criticalRate == 0) ? numeric_limits<double>::infinity():
+                    rexp(1./criticalRate);
+                if (stepType == eExplicit  ||
+                    (tau1 > tau2  &&  stepType == eImplicit && tau2 <= tauEx)) {
+                    if (debug) {
+                        cerr << "going explicit w/ tau = " << min(tau1, tau2)
+                             << endl;
+                    }
+                    x_SingleStepETL(min(tau1, tau2));
+                } else {
+                    if (debug) {
+                        cerr << "going implicit w/ tau = " << tau1 << endl;
+                    }
+                    x_SingleStepITL(tau1);
                 }
-                tauTooBig = !x_SingleStepETL(min(tau1, tau2));
-            } else {
-                if (debug) {
-                    cerr << "going implicit w/ tau = " << tau1 << endl;
-                }
-                tauTooBig = !x_SingleStepITL(tau1);
-            }
-            if (!tauTooBig) {
                 if (tau1 > tau2) { //pick one critical transition
                     unsigned int j = x_PickCritical(criticalRate);
+                    m_LastTransition = j;
                     if (debug) {
                         cerr << "hittin' the critical (" << j << ")" << endl;
+                    }
+                    if (m_VerboseTracing >= 1) {
+                        REprintf("%f:    executing critical transition #%i\n",
+                                 *m_T, j+1);
                     }
                     for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
                         m_X[m_Nu[j][i].m_State] +=  m_Nu[j][i].m_Mag;
@@ -1124,20 +1235,20 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 }
 
                 m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
-            }
-            if (debug) {
-                cerr << *m_T << " -- ";
-                for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-                    cerr << m_X[i] << " ";
+                if (m_VerboseTracing >= 2) {
+                    REprintf("%f -- ", *m_T);
+                    for (unsigned int i = 0;  i < m_NumStates;  ++i) {
+                        REprintf("%f ", m_X[i]);
+                    }
+                    REprintf("\n");
                 }
-                cerr << endl;
+            } catch (overflow_error&) { //i.e. tauTooBig exception
+                tauTooBig = true;
+                if (m_VerboseTracing >= 1) {
+                    REprintf("%f:    tau too big; cutting in half\n", *m_T);
+                }
+                tau1 /= 2;
             }
-        }
-        if (tauTooBig) {
-            if (debug) {
-                cerr << "whoa.. knock that tau back down" << endl;
-            }
-            tau1 /= 2;
         }
     } while (tauTooBig);
 
@@ -1150,14 +1261,17 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
 extern "C" {
     SEXP simAdaptiveTau(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_fJacob,
                         SEXP s_params, SEXP s_tf,
-                        SEXP s_deterministic, SEXP s_changebound,
+                        SEXP s_deterministic, SEXP s_halting,
+                        SEXP s_changebound,
                         SEXP s_tlparams, SEXP s_fMaxtau) {
         try{
-        if (!isVector(s_x0)  ||  !isReal(s_x0)) {
+        if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
             error("invalid vector of initial values");
         }
-        if (!isMatrix(s_nu)  ||  !isInteger(s_nu)) {
-            error("invalid transitions matrix");
+        if (!isVectorList(s_nu)  &&
+            (!isMatrix(s_nu)  ||
+             INTEGER(getAttrib(s_nu, R_DimSymbol))[0] != length(s_x0))) {
+            error("invalid transition specification");
         }
         if (!isFunction(s_f)) {
             error("invalid rate function");
@@ -1165,16 +1279,8 @@ extern "C" {
         if (!isNull(s_fJacob)  &&  !isFunction(s_fJacob)) {
             error("invalid Jacobian function");
         }
-        if (!isReal(s_tf)  ||  length(s_tf) != 1) {
+        if (!(isReal(s_tf)  ||  isInteger(s_tf))  ||  length(s_tf) != 1) {
             error("invalid final time");
-        }
-        if (length(s_x0) != INTEGER(getAttrib(s_nu, R_DimSymbol))[0]) {
-            error("mismatch between number of state variables (%i) and number "
-                  "of rows in transition matrix (%i)", length(s_x0),
-                  INTEGER(getAttrib(s_nu, R_DimSymbol))[0]);
-        }
-        if (!isVector(s_deterministic)  ||  !isLogical(s_deterministic)) {
-            error("invalid deterministic parameter -- must be logical vector");
         }
         if (!isVector(s_changebound)  ||  !isReal(s_changebound)  ||
             length(s_changebound) != length(s_x0)) {
@@ -1187,15 +1293,14 @@ extern "C" {
             error("invalid maxTau function");
         }
 
-        CStochasticEqns eqns(s_x0, INTEGER(s_nu),
-                             INTEGER(getAttrib(s_nu, R_DimSymbol))[1],
+        CStochasticEqns eqns(s_x0, s_nu,
                              s_f, s_fJacob, s_params, REAL(s_changebound),
-                             s_fMaxtau, s_deterministic);
+                             s_fMaxtau, s_deterministic, s_halting);
         if (!isNull(s_tlparams)) {
             eqns.SetTLParams(s_tlparams);
         }
-        eqns.EvaluateATLUntil(REAL(s_tf)[0]);
-        return eqns.GetTimeSeriesSEXP();
+        eqns.EvaluateATLUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        return eqns.GetResult();
         } catch (exception &e) {
             error(e.what());
             return R_NilValue;
@@ -1206,42 +1311,29 @@ extern "C" {
 
     SEXP simExact(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_params, SEXP s_tf) {
         try {
-        if (!isVector(s_x0)  ||  !isReal(s_x0)) {
+        if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
             error("invalid vector of initial values");
         }
-        if (!isMatrix(s_nu)  ||  !isInteger(s_nu)) {
-            error("invalid transitions matrix");
+        if (!isVectorList(s_nu)  &&
+            (!isMatrix(s_nu)  ||
+             INTEGER(getAttrib(s_nu, R_DimSymbol))[0] != length(s_x0))) {
+            error("invalid transition specification");
         }
         if (!isFunction(s_f)) {
             error("invalid rate function");
         }
-        if (!isReal(s_tf)  ||  length(s_tf) != 1) {
+        if (!(isReal(s_tf)  ||  isInteger(s_tf))  ||  length(s_tf) != 1) {
             error("invalid final time");
         }
-        if (length(s_x0) != INTEGER(getAttrib(s_nu, R_DimSymbol))[0]) {
-            error("mismatch between number of state variables and number of rows in transition matrix");
-        }
 
-        CStochasticEqns eqns(s_x0, INTEGER(s_nu),
-                             INTEGER(getAttrib(s_nu, R_DimSymbol))[1],
-                             s_f, NULL, s_params, NULL, NULL, NULL);
-        eqns.EvaluateExactUntil(REAL(s_tf)[0]);
-        return eqns.GetTimeSeriesSEXP();
+        CStochasticEqns eqns(s_x0, s_nu,
+                             s_f, NULL, s_params, NULL, NULL,
+                             R_NilValue, R_NilValue);
+        eqns.EvaluateExactUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        return eqns.GetResult();
         } catch (exception &e) {
             error(e.what());
             return R_NilValue;
         }
     }
-    /*
-    R_CallMethodDef callMethods[] = {
-        {"ssa.adaptivetau", (DL_FUNC)&simAdaptiveTau, 10},
-        {"ssa.exact", (DL_FUNC)&simExact, 5},
-        {NULL,NULL, 0}
-    };
-
-    void R_init_adaptivetau(DllInfo *dll)
-    {
-        R_registerRoutines(dll,NULL,callMethods,NULL,NULL);
-    }
-    */
 }
