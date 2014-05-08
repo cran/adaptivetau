@@ -1,4 +1,15 @@
 ----------------------------
+Version 2.1 - 8 May 2014
+----------------------------
+  - Remove automatic byte-code compilation of R rate functions handed
+    to ssa.adaptivetau (previously had ben using library(compile)).
+    Previous behavior led to significant inefficiencies if
+    ssa.adaptivetau was called multiple times with the same rate
+    function; thanks to Sebastian Funk for raising this issue.
+    Instead, modify documentation to recommend that users use
+    enableJIT(1).
+
+----------------------------
 Version 2.0 - 24 Mar 2014
 ----------------------------
   - transition matrix ("nu") can now be specified with an

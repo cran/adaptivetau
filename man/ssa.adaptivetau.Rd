@@ -50,9 +50,6 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
       \item single real number giving the current time (all simulations
       start at t=0)
     }
-    If the compiler package is available, this function will be
-    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
-    before use.
   }
   \item{params}{
     any R variable to be passed as-is to rateFunc, presumably specifying
@@ -72,9 +69,6 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     \bold{NOTE:} the implicit tau-leaping algorithm will reduce the observed
     variance for fast-changing state variables, although the mean will
     be correct.
-    If the compiler package is available, this function will be
-    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
-    before use.
   }
   \item{maxTauFunc}{ R function that returns single real number giving
     the maximum tau leap allowable from the current state.  Only
@@ -82,9 +76,6 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     greater than tl.params$maxtau (should only need to use if your rate
     functions have a dramatically discontinuous first derivative).
     Takes same parameters as rateFunc.
-    If the compiler package is available, this function will be
-    automatically byte code compiled using \code{\link[compiler]{cmpfun}}
-    before use.
   }
   \item{deterministic}{
     Specify transitions to be treated as deterministic.  If not NULL,
@@ -167,6 +158,10 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
 
   All error messages that reference variables or transitions by number
   use 1-based numbering where the first variable (or transition) is 1.
+
+  Consider calling \code{\link[compiler]{enableJIT}(1)} before running
+  ssa.adaptivetau.  In most circumstances, this should yield some
+  speedup by byte-code compiling the rate function.
 }
 \value{
   If no halting transitions are specified, then a two-dimensional matrix
@@ -181,7 +176,11 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
   otherwise.
 }
 \note{
-  Development of this package was supported in part by National Science Foundation award DBI-0906041.  Any opinions, findings, and conclusions or recommendations expressed in this material are those of the author and do not necessarily reflect the views of the National Science Foundation.
+  Development of this package was supported in part by National Science
+  Foundation award DBI-0906041 and National Institute of Health award
+  K99-GM104158.  Any opinions, findings, and conclusions or
+  recommendations expressed in this material are those of the author and
+  do not necessarily reflect the views of the NSF or NIH.
 }
 \references{
   Cao Y, Gillespie DT, Petzold LR, \emph{The Journal of

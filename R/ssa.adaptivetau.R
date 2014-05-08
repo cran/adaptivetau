@@ -1,17 +1,3 @@
-ssa.compile <- function(f) {
-  if (is.null(f)) return (NULL)
-  ## compile function, if R compiler available
-  origWarn = options()$warn
-  options(warn=-1); #disable warning message if doesn't exist
-  haveCompiler = require(compiler, quietly=TRUE)
-  options(warn=origWarn)
-  if (haveCompiler) {
-    compiler::cmpfun(f, options=list(suppressUndefined=TRUE))
-  } else {
-    f
-  }
-}
-
 ssa.adaptivetau <-
 function(init.values, transitions, rateFunc, params, tf,
          jacobianFunc = NULL, maxTauFunc = NULL,
@@ -20,15 +6,15 @@ function(init.values, transitions, rateFunc, params, tf,
          tl.params = NULL) {
   return(.Call('simAdaptiveTau', PACKAGE='adaptivetau',
                init.values, transitions,
-               ssa.compile(rateFunc), ssa.compile(jacobianFunc),
+               rateFunc, jacobianFunc,
                params, tf, deterministic, halting,
-               relratechange, tl.params, ssa.compile(maxTauFunc)))
+               relratechange, tl.params, maxTauFunc))
 }
 
 ssa.exact <-
 function(init.values, transitions, rateFunc, params, tf) {
   return(.Call('simExact', PACKAGE='adaptivetau',
-               init.values, transitions, ssa.compile(rateFunc), params, tf))
+               init.values, transitions, rateFunc, params, tf))
 }
 
 ssa.maketrans <- function(variables, ...) {

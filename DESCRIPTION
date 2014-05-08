@@ -1,8 +1,8 @@
 Package: adaptivetau
 Type: Package
 Title: Tau-leaping stochastic simulation
-Version: 2.0
-Date: 2014-3-24
+Version: 2.1
+Date: 2014-5-8
 Author: Philip Johnson
 Maintainer: Philip Johnson <plfjohnson@emory.edu>
 Depends: R (>= 2.10.1)
@@ -11,10 +11,10 @@ Description: Implements adaptive tau leaping to approximate the
         trajectory of a continuous-time stochastic process as
         described by Cao et al. (2007) The Journal of Chemical
         Physics.  This package is based upon work supported by
-        National Science Foundation DBI-0906041 to Philip Johnson and
-        National Institutes of Health R01-AI049334 to Rustom Antia.
+        NSF DBI-0906041 and NIH K99-GM104158 to Philip Johnson and
+        NIH R01-AI049334 to Rustom Antia.
 License: GPL (>= 3)
-Packaged: 2014-03-24 15:32:40 UTC; pjohnson
+Packaged: 2014-05-08 13:51:24 UTC; pjohnson
 NeedsCompilation: yes
 Repository: CRAN
-Date/Publication: 2014-03-24 16:55:24
+Date/Publication: 2014-05-08 16:45:08
