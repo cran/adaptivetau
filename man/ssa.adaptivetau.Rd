@@ -42,10 +42,13 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
   \item{rateFunc}{
     R function that returns instantaneous transition rates for each
     transition in the form a real-valued one-dimensional vector with
-    length equal to the number of transitions.  Must accept the
-    following arguments:
+    length equal to the number of transitions.  The order of these
+    rates must match the order in which transitions were specified in
+    the \code{transitions} parameter above.  This function must accept
+    the following arguments:
     \itemize{
-      \item vector of current values for all state variables
+      \item vector of current values for all state variables (in order
+      used in the \code{init.values} argument above)
       \item parameters as supplied in argument to ssa.adaptivetau
       \item single real number giving the current time (all simulations
       start at t=0)

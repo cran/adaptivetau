@@ -62,7 +62,7 @@ legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
 ### code chunk number 8: adaptivetau.Rnw:114-118 (eval = FALSE)
 ###################################################
 ## simResults = ssa.exact(init.values = c(prey = 1000, pred = 500),
-##                        transitions, lvRates,
+##                        transitions, lvRateF,
 ##                        params = list(r=10, beta=0.01, delta=10),
 ##                        tf=12)
 
@@ -71,7 +71,7 @@ legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
 ### code chunk number 9: adaptivetau.Rnw:121-126 (eval = FALSE)
 ###################################################
 ## simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
-##                              transitions, lvRates,
+##                              transitions, lvRateF,
 ##                              params = list(r=10, beta=0.01, delta=10),
 ##                              tf=12,
 ##                              tl.params = list(epsilon = 0.005))

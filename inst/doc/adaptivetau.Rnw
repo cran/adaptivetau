@@ -74,7 +74,7 @@ transitions = list(c(prey = +1),            # trans 1: prey grows
                    c(prey = -2, pred = +1), # trans 2: predation
                    c(pred = -1))            # trans 3: predator dies
 @ 
-Next we write a function to calculate the rates of each transition ($\lambda$):
+Next we write a function to calculate the rates of each transition ($\lambda$).  The order in which rates are returned by this function must match the order of transitions specified by the matrix above:
 <<>>=
 lvRateF <- function(x, params, t) {
   return(c(params$r * x["prey"],               # rate of prey growing
@@ -113,14 +113,14 @@ legend("bottomleft", legend=c("prey", "predator"), lty=1:2, col=1:2)
 The above code uses the adaptive tau-leaping approximation for simulation.  An exact simulation requires more computational time, but captures more fine-scale variance, as you can see by running another simulation using the \texttt{ssa.exact} command:
 <<eval=FALSE>>=
 simResults = ssa.exact(init.values = c(prey = 1000, pred = 500),
-                       transitions, lvRates,
+                       transitions, lvRateF,
                        params = list(r=10, beta=0.01, delta=10),
                        tf=12)
 @
 Alternatively, you can improve the approximation by reducing the $\epsilon$ variable in the tau-leaping parameters (\texttt{tl.params}) when calling \texttt{ssa.adaptivetau} (in the earlier example, $\epsilon$ takes its default value of 0.05):
 <<eval=FALSE>>=
 simResults = ssa.adaptivetau(init.values = c(prey = 1000, pred = 500),
-                             transitions, lvRates,
+                             transitions, lvRateF,
                              params = list(r=10, beta=0.01, delta=10),
                              tf=12,
                              tl.params = list(epsilon = 0.005))

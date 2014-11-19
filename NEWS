@@ -1,4 +1,11 @@
 ----------------------------
+Version 2.2 - 19 Nov 2014
+----------------------------
+  - Add check for infinite transition rate; if found, abort with a
+    meaningful warning message and return results generated until this point.
+  - If abort due to user interrupt, now return results generated so far.
+
+----------------------------
 Version 2.1 - 8 May 2014
 ----------------------------
   - Remove automatic byte-code compilation of R rate functions handed

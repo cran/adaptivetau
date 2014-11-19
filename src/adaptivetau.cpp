@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 290 2014-03-24 15:32:30Z pjohnson $
+/* $Id: adaptivetau.cpp 298 2014-11-19 21:13:54Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -50,11 +50,20 @@ enum EStepType {
 
 const bool debug = false;
 
+class CEarlyExit : public runtime_error {
+public:
+    CEarlyExit(const string &w) : runtime_error(w) {}
+};
+
 //use below rather than R's "error" directly (which will not free memory, etc.)
 #ifdef throwError
 #undef throwError
 #endif
 #define throwError(e) { ostringstream s; s << e; throw runtime_error(s.str()); }
+#ifdef throwEarlyExit
+#undef throwEarlyExit
+#endif
+#define throwEarlyExit(e) { ostringstream s; s << e << "; results returned only up until this point"; throw CEarlyExit(s.str());}
 
 class CStochasticEqns {
 public:
@@ -300,8 +309,8 @@ public:
             x_UpdateRates();
             x_SingleStepATL(tF);
             if (++c % 10 == 0  &&  checkUserInterrupt()) {
-                throwError("simulation interrupted by user at time " << *m_T
-                           << " after " << c << " time steps.");
+                throwEarlyExit("simulation interrupted by user at time " << *m_T
+                               << " after " << c << " time steps.");
             }
         }
         //save RNG state back to R (could also do in destructor, but
@@ -321,8 +330,8 @@ public:
             x_UpdateRates();
             x_SingleStepExact(tF);
             if (++c % 10 == 0  &&  checkUserInterrupt()) {
-                throwError("simulation interrupted by user at time " << *m_T
-                           << " after " << c << " time steps.");
+                throwEarlyExit("simulation interrupted by user at time " << *m_T
+                               << " after " << c << " time steps.");
             }
         }
         //save RNG state back to R (could also do in destructor, but
@@ -464,12 +473,12 @@ protected:
             for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
                 if (ISNAN(m_Rates[j])) {
                     throwError("invalid rate function -- rate for transition "
-                               << j+1 << "is not a number (NA/NaN)! (check "
+                               << j+1 << " is not a number (NA/NaN)! (check "
                                "for divison by zero or similar)");
                 }
                 if (m_Rates[j] < 0) {
                     throwError("invalid rate function -- rate for transition "
-                               << j+1 << "is negative!");
+                               << j+1 << " is negative!");
                 }
             }
         }
@@ -1142,6 +1151,9 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
         m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
         return;
     }
+    if (!R_finite(criticalRate + noncritRate)) {
+        throwEarlyExit("Infinite transition rate at time " << *m_T);
+    }
 
     // calc explicit & implicit taus
     double tau1, tau2;
@@ -1299,7 +1311,11 @@ extern "C" {
         if (!isNull(s_tlparams)) {
             eqns.SetTLParams(s_tlparams);
         }
-        eqns.EvaluateATLUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        try {
+            eqns.EvaluateATLUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        } catch (CEarlyExit &e) {
+            warning(e.what());
+        }
         return eqns.GetResult();
         } catch (exception &e) {
             error(e.what());
@@ -1329,7 +1345,11 @@ extern "C" {
         CStochasticEqns eqns(s_x0, s_nu,
                              s_f, NULL, s_params, NULL, NULL,
                              R_NilValue, R_NilValue);
-        eqns.EvaluateExactUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        try {
+            eqns.EvaluateExactUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+        } catch (CEarlyExit &e) {
+            warning(e.what());
+        }
         return eqns.GetResult();
         } catch (exception &e) {
             error(e.what());
