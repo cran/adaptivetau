@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 298 2014-11-19 21:13:54Z pjohnson $
+/* $Id: adaptivetau.cpp 328 2016-09-19 15:31:39Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -65,6 +65,18 @@ public:
 #endif
 #define throwEarlyExit(e) { ostringstream s; s << e << "; results returned only up until this point"; throw CEarlyExit(s.str());}
 
+// Functions below are a hack suggested by Simon Urbanek (although
+// he "would not recommend for general use") to check if the user has
+// asked to interrupt execution.  The problem with calling
+// R_CheckUserInterrupt directly is it longjmps and we don't have
+// a chance to free memory from the heap.
+// http://tolstoy.newcastle.edu.au/R/e13/devel/11/04/1049.html
+// See extern "C" definition of chkIntFn above.
+extern "C" void chkIntFn(void*) { R_CheckUserInterrupt(); }
+bool AdaptiveTauCheckUserInterrupt(void) {
+    return (R_ToplevelExec(chkIntFn, NULL) == FALSE);
+}
+
 class CStochasticEqns {
 public:
     CStochasticEqns(SEXP initVal, SEXP nu,
@@ -93,8 +105,8 @@ public:
         if (isMatrix(nu)) { //old matrix data structure
             CRMatrix<int> mat(coerceVector(nu,INTSXP), true);
             m_Nu.resize(mat.ncol());
-            for (unsigned int i = 0;  i < mat.nrow();  ++i) {
-                for (unsigned int j = 0;  j < mat.ncol();  ++j) {
+            for (int i = 0;  i < mat.nrow();  ++i) {
+                for (int j = 0;  j < mat.ncol();  ++j) {
                     if (mat(i,j) != 0) {
                         SChange s;
                         s.m_State = i; s.m_Mag = mat(i,j);
@@ -126,7 +138,7 @@ public:
                                         stateStr) != 0;
                              ++state);
                     }
-                    if (state < 0  ||  state >= m_NumStates) {
+                    if (state < 0  ||  state >= (int) m_NumStates) {
                         istringstream iss(stateStr);
                         iss >> state;
                         if (!iss  ||  !iss.eof()) {
@@ -135,7 +147,7 @@ public:
                             --state; //switch from 1-based to 0-based
                         }
                     }
-                    if (state < 0  ||  state >= m_NumStates) {
+                    if (state < 0  ||  state >= (int) m_NumStates) {
                         throwError("transition matrix references non-existent "
                                    "state variable '" << stateStr << "'");
                     }
@@ -206,7 +218,8 @@ public:
                 throwError("initial value for variable " << i+1 <<
                            " must be positive (currently " << m_X[i] << ")");
             }
-            if (!m_RealValuedVariables[i]  &&  (m_X[i] - trunc(m_X[i]) > 1e-5)){
+            if (!m_RealValuedVariables[i]  &&
+                (m_X[i] - Rf_ftrunc(m_X[i]) > 1e-5)) {
                 if (m_VarNames != NULL) {
                     throwError("initial value for variable " << i+1 <<
                                " ('"<<CHAR(STRING_PTR(m_VarNames)[i])<<"') " <<
@@ -287,17 +300,6 @@ public:
         }
     }
 
-    // Functions below are a hack suggested by Simon Urbanek (although
-    // he "would not recommend for general use") to check if the user has
-    // asked to interrupt execution.  The problem with calling
-    // R_CheckUserInterrupt directly is it longjmps and we don't have
-    // a chance to free memory from the heap.
-    // http://tolstoy.newcastle.edu.au/R/e13/devel/11/04/1049.html
-    static void chkIntFn(void*) { R_CheckUserInterrupt(); }
-    bool checkUserInterrupt(void) {
-        return (R_ToplevelExec(chkIntFn, NULL) == FALSE);
-    }
-
     void EvaluateATLUntil(double tF) {
         unsigned int c = 0;
         //add initial conditions to time series
@@ -308,7 +310,7 @@ public:
                 m_TransCats[m_LastTransition] != eHalting)) {
             x_UpdateRates();
             x_SingleStepATL(tF);
-            if (++c % 10 == 0  &&  checkUserInterrupt()) {
+            if (++c % 10 == 0  &&  AdaptiveTauCheckUserInterrupt()) {
                 throwEarlyExit("simulation interrupted by user at time " << *m_T
                                << " after " << c << " time steps.");
             }
@@ -329,7 +331,7 @@ public:
                 m_TransCats[m_LastTransition] != eHalting)) {
             x_UpdateRates();
             x_SingleStepExact(tF);
-            if (++c % 10 == 0  &&  checkUserInterrupt()) {
+            if (++c % 10 == 0  &&  AdaptiveTauCheckUserInterrupt()) {
                 throwEarlyExit("simulation interrupted by user at time " << *m_T
                                << " after " << c << " time steps.");
             }
@@ -376,9 +378,9 @@ public:
                 SET_VECTOR_ELT(colnames, i+1,
                                STRING_PTR(m_VarNames)[i]);
             } else {
-                char name[10];
-                snprintf(name, 10, "x%i", i+1);
-                SET_VECTOR_ELT(colnames, i+1, mkChar(name));
+                ostringstream oss;
+                oss << "x" << i+1;
+                SET_VECTOR_ELT(colnames, i+1, mkChar(oss.str().c_str()));
             }
         }
         setAttrib(res, R_DimNamesSymbol, dimnames);
@@ -682,7 +684,7 @@ void CStochasticEqns::x_SetCat(SEXP trans, ETransCat cat) {
     } else {
         CRVector<int> w(coerceVector(trans, INTSXP), true);
         for (unsigned int i = 0;  i < w.size();  ++i) {
-            if (w[i] > m_TransCats.size()) {
+            if (w[i] > (int) m_TransCats.size()) {
                 throwError("one of your list(s) of transitions references a "
                            "transition that doesn't exist (" << w[i] << ") "
                            "when last transition is " << m_TransCats.size() <<
@@ -1038,7 +1040,7 @@ void CStochasticEqns::x_SingleStepITL(double tau) {
             throw overflow_error("tau too big");
         }
         if (!m_RealValuedVariables[i]) {
-            m_X[i] = round(m_X[i]);
+            m_X[i] = floor(m_X[i] + 0.5); //i.e., round
         }
     }
     delete[] origX;

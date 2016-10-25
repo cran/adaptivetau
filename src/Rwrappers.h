@@ -1,4 +1,4 @@
-/* $Id: Rwrappers.hpp 286 2014-02-05 03:25:12Z pjohnson $
+/* $Id: Rwrappers.hpp 325 2016-08-22 18:12:16Z pjohnson $
   ---------------------------------------------------------------------------
   Simple C++ wrappers around R datatypes
   ---------------------------------------------------------------------------
@@ -74,6 +74,11 @@ public:
     }
 
     // setters
+    void SetAll(const Timpl& value) {//FIXME -- maybe not void?
+        for (unsigned int i = 0;  i < size();  ++i) {
+            m_Data[i] = value;
+        }
+    }
     Timpl& operator[] (int i) {
         if (i >= m_N) { Rf_error("CRVector[] out of bounds"); }
         return m_Data[i];

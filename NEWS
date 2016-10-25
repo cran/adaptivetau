@@ -1,4 +1,11 @@
 ----------------------------
+Version 2.2-1 - 19 Sept 2016
+----------------------------
+  - rework to avoid usage of C99 features not included in C++98
+  - use title case for package title in DESCRIPTION
+  - update maintainer email address
+
+----------------------------
 Version 2.2 - 19 Nov 2014
 ----------------------------
   - Add check for infinite transition rate; if found, abort with a
@@ -9,7 +16,7 @@ Version 2.2 - 19 Nov 2014
 Version 2.1 - 8 May 2014
 ----------------------------
   - Remove automatic byte-code compilation of R rate functions handed
-    to ssa.adaptivetau (previously had ben using library(compile)).
+    to ssa.adaptivetau (previously had been using library(compile)).
     Previous behavior led to significant inefficiencies if
     ssa.adaptivetau was called multiple times with the same rate
     function; thanks to Sebastian Funk for raising this issue.
