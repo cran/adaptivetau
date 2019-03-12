@@ -31,19 +31,10 @@
 template<typename Tlogic, typename Timpl = Tlogic> class CRVectorBase {
 protected:
     //data must correspond to SEXP!
-    CRVectorBase(SEXP v, Timpl* fconverter (SEXP x), bool prot) {
+    CRVectorBase(SEXP v, Timpl* fconverter (SEXP x)) {
         m_N = Rf_length(v);
         m_Data = fconverter(v);
         m_Sexp = v;
-        m_AutoProt = prot;
-        if (m_AutoProt) {
-            PROTECT(m_Sexp);
-        }
-    }
-    ~CRVectorBase(void) {
-        if (m_AutoProt) {
-            UNPROTECT(1);//no guarantee of LIFO, so be careful!
-        }
     }
 public:
     int GetN(void) const {return m_N;}
@@ -106,35 +97,34 @@ protected:
     SEXP m_Sexp;
     Timpl *m_Data;
     int m_N;
-    bool m_AutoProt;
 };
 
 template <typename T> class CRVector {};
 template<> class CRVector<double> : public CRVectorBase<double> {
 public:
-    CRVector(SEXP p, bool prot=false) : CRVectorBase<double>(p, REAL, prot) {}
-    CRVector(int n, bool prot) :
-        CRVectorBase<double>(Rf_allocVector(REALSXP, n), REAL, prot) {}
+    CRVector(SEXP p) : CRVectorBase<double>(p, REAL) {}
+    CRVector(int n) :
+        CRVectorBase<double>(Rf_allocVector(REALSXP, n), REAL) {}
 };
 template<> class CRVector<int> : public CRVectorBase<int> {
 public:
-    CRVector(SEXP p, bool prot=false) : CRVectorBase<int>(p, INTEGER, prot) {}
-    CRVector(int n, bool prot) :
-        CRVectorBase<int>(Rf_allocVector(INTSXP, n), INTEGER, prot) {}
+    CRVector(SEXP p) : CRVectorBase<int>(p, INTEGER) {}
+    CRVector(int n) :
+        CRVectorBase<int>(Rf_allocVector(INTSXP, n), INTEGER) {}
 };
 template<> class CRVector<bool> : public CRVectorBase<bool,int> {
 public:
-    CRVector(SEXP p, bool prot=false) :
-        CRVectorBase<bool,int>(p, LOGICAL, prot) {}
-    CRVector(int n, bool prot) :
-        CRVectorBase<bool,int>(Rf_allocVector(LGLSXP, n), LOGICAL, prot) {}
+    CRVector(SEXP p) :
+        CRVectorBase<bool,int>(p, LOGICAL) {}
+    CRVector(int n) :
+        CRVectorBase<bool,int>(Rf_allocVector(LGLSXP, n), LOGICAL) {}
 };
 template<> class CRVector<const char*> : public CRVectorBase<SEXP> {
 public:
-    CRVector(SEXP p, bool prot=false) :
-        CRVectorBase<SEXP>(p, STRING_PTR, prot) {}
-    CRVector(int n, bool prot) :
-        CRVectorBase<SEXP>(Rf_allocVector(STRSXP, n), STRING_PTR, prot) {}
+    CRVector(SEXP p) :
+        CRVectorBase<SEXP>(p, STRING_PTR) {}
+    CRVector(int n) :
+        CRVectorBase<SEXP>(Rf_allocVector(STRSXP, n), STRING_PTR) {}
     const char* operator[] (int i) const {
         if (i >= m_N) { Rf_error("CRVector[] out of bounds"); }
         return CHAR(STRING_ELT(m_Sexp, i));
@@ -169,22 +159,14 @@ public:
         m_Names = (Rf_isNull(Rf_getAttrib(l, R_NamesSymbol))) ? NULL :
             new CRVector<const char*>(Rf_getAttrib(l, R_NamesSymbol));
         m_Sexp = l;
-        m_AutoProt = false;
     }
-    CRList(int n, bool prot) { //create new list
+    CRList(int n) { //create new list
         m_N = n;
         m_Names = NULL;
         m_Sexp = Rf_allocVector(VECSXP, m_N);
-        m_AutoProt = prot;
-        if (m_AutoProt) {
-            PROTECT(m_Sexp);
-        }
     }
     ~CRList() {
         delete m_Names;
-        if (m_AutoProt) {
-            UNPROTECT(1);//no guarantee of LIFO, so be careful!
-        }
     }
     unsigned int size(void) const { return m_N; }
     operator SEXP() { return m_Sexp; }
@@ -218,7 +200,7 @@ public:
         }
         if (name) {
             if (!m_Names) {
-                m_Names = new CRVector<const char*>(m_N, false);
+                m_Names = new CRVector<const char*>(m_N);
                 Rf_setAttrib(m_Sexp, R_NamesSymbol, *m_Names);
             }
             m_Names->Set(i, name);
@@ -229,7 +211,6 @@ public:
 
 private:
     SEXP m_Sexp;
-    bool m_AutoProt;
     CRVector<const char*> *m_Names;
     int m_N;
 };
@@ -239,20 +220,11 @@ private:
 template<typename T> class CRMatrixBase {
 protected:
     //data must correspond to SEXP!
-    CRMatrixBase(SEXP m, T* fconverter (SEXP x), bool prot) {
+    CRMatrixBase(SEXP m, T* fconverter (SEXP x)) {
         m_NumRows = INTEGER(Rf_getAttrib(m, R_DimSymbol))[0];
         m_NumCols = INTEGER(Rf_getAttrib(m, R_DimSymbol))[1];
         m_Data = (T*) fconverter(m);
         m_Sexp = m;
-        m_AutoProt = prot;
-        if (m_AutoProt) {
-            PROTECT(m_Sexp);
-        }
-    }
-    ~CRMatrixBase(void) {
-        if (m_AutoProt) {
-            UNPROTECT(1);//no guarantee of LIFO, so be careful!
-        }
     }
 public:
     int nrow(void) const {return m_NumRows;}
@@ -283,7 +255,6 @@ public:
     operator SEXP() { return m_Sexp; }
 private:
     SEXP m_Sexp;
-    bool m_AutoProt;
     T *m_Data;
     int m_NumRows;
     int m_NumCols;
@@ -291,15 +262,15 @@ private:
 template <typename T> class CRMatrix {};
 template<> class CRMatrix<double> : public CRMatrixBase<double> {
 public:
-    CRMatrix(SEXP p, bool prot=false) : CRMatrixBase<double>(p, REAL, prot) {}
-    CRMatrix(int r, int c, bool prot) :
-        CRMatrixBase<double>(Rf_allocMatrix(REALSXP, r, c), REAL, prot) {}
+    CRMatrix(SEXP p) : CRMatrixBase<double>(p, REAL) {}
+    CRMatrix(int r, int c) :
+        CRMatrixBase<double>(Rf_allocMatrix(REALSXP, r, c), REAL) {}
 };
 template<> class CRMatrix<int> : public CRMatrixBase<int> {
 public:
-    CRMatrix(SEXP p, bool prot=false) : CRMatrixBase<int>(p, INTEGER, prot) {}
-    CRMatrix(int r, int c, bool prot) :
-        CRMatrixBase<int>(Rf_allocMatrix(INTSXP, r, c), INTEGER, prot) {}
+    CRMatrix(SEXP p) : CRMatrixBase<int>(p, INTEGER) {}
+    CRMatrix(int r, int c) :
+        CRMatrixBase<int>(Rf_allocMatrix(INTSXP, r, c), INTEGER) {}
 };
 
 #endif

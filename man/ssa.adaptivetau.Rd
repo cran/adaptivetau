@@ -198,8 +198,7 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
 \seealso{
   %% ~~objects to See Also as \code{\link{help}}, ~~~
   For systems with sparse transition matrices, see helper function
-  \code{\link{ssa.maketrans}}.  For a pure-R implementation without C++
-  underneath, see \code{\link[GillespieSSA]{GillespieSSA}}.  Also,
+  \code{\link{ssa.maketrans}}.
   \code{\link{ssa.exact}} exposes a R interface to the C++
   implementation of the exact, non-approximate simulation algorithm
   (sometimes known as "Gillespie").

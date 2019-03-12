@@ -75,8 +75,6 @@ ssa.exact(init.values, transitions, rateFunc, params, tf)
   This function is a bonus the comes along with the approximate (but
   faster) \code{\link{ssa.adaptivetau}}.  For systems with sparse
   transition matrices, see helper function \code{\link{ssa.maketrans}}.
-  For a pure-R implementation without C++ underneath, see
-  \code{\link[GillespieSSA]{GillespieSSA}}.
 }
 \examples{
 ## Lotka-Volterra example

@@ -1,4 +1,18 @@
 ----------------------------
+Version 2.2-2 - 4 March 2019
+----------------------------
+  - add "Gillespie stochastic simulation algorithm" keyword phrase to
+    DESCRIPTION to aid people searching for a package such as this
+    one.
+  - fix two PROTECT errors (thanks to Tomas Kalibera's tool for identifying)
+  - refactor C++ convenience functions to avoid false warnings about
+    PROTECT errors from above tool.
+  - update R/C interface code to use R's automatic registration of
+    exported symbols
+  - remove from help pages the "see also" mention of GillespieSSA
+    package, which has been orphaned for many years now.
+
+----------------------------
 Version 2.2-1 - 19 Sept 2016
 ----------------------------
   - rework to avoid usage of C99 features not included in C++98

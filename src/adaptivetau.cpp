@@ -92,18 +92,19 @@ public:
         if (isNull(getAttrib(initVal, R_NamesSymbol))) {
             m_VarNames = NULL;
         } else {
-            SEXP namesO = getAttrib(initVal, R_NamesSymbol);
-
+            SEXP namesO = PROTECT(getAttrib(initVal, R_NamesSymbol));
             PROTECT(m_VarNames = allocVector(STRSXP, length(namesO)));
-
             copyVector(m_VarNames, namesO);
             setAttrib(x, R_NamesSymbol, m_VarNames);
+            UNPROTECT(2);
+            PROTECT(m_VarNames);
         }
         m_X = REAL(x);
 
         // copy Nu matrix into my own sparse matrix data structure
         if (isMatrix(nu)) { //old matrix data structure
-            CRMatrix<int> mat(coerceVector(nu,INTSXP), true);
+            CRMatrix<int> mat(PROTECT(coerceVector(nu,INTSXP)));
+            UNPROTECT(1);
             m_Nu.resize(mat.ncol());
             for (int i = 0;  i < mat.nrow();  ++i) {
                 for (int j = 0;  j < mat.ncol();  ++j) {
@@ -123,7 +124,8 @@ public:
                                "must be a list of either integer or double "
                                "vectors.");
                 }
-                const CRVector<int> trans(coerceVector(list[j],INTSXP), true);
+                const CRVector<int> trans(PROTECT(coerceVector(list[j],INTSXP)));
+                UNPROTECT(1);
                 m_Nu[j].resize(trans.size());
                 for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
                     short int state = -1;
@@ -253,51 +255,56 @@ public:
         UNPROTECT(cnt);
     }
     void SetTLParams(SEXP list) {
-        SEXP names = getAttrib(list, R_NamesSymbol);
-
-        for (int i = 0;  i < length(names);  ++i) {
-            if (strcmp("epsilon", CHAR(STRING_PTR(names)[i])) == 0) {
-                if (!isReal(VECTOR_ELT(list, i))  ||
-                    length(VECTOR_ELT(list, i)) != 1) {
-                    throwError("invalid value for parameter '" <<
-                               CHAR(STRING_PTR(names)[i]) << "'");
+        SEXP names = PROTECT(getAttrib(list, R_NamesSymbol));
+        try {
+            for (int i = 0;  i < length(names);  ++i) {
+                if (strcmp("epsilon", CHAR(STRING_PTR(names)[i])) == 0) {
+                    if (!isReal(VECTOR_ELT(list, i))  ||
+                        length(VECTOR_ELT(list, i)) != 1) {
+                        throwError("invalid value for parameter '" <<
+                                   CHAR(STRING_PTR(names)[i]) << "'");
+                    }
+                    m_Epsilon = REAL(VECTOR_ELT(list, i))[0];
+                } else if (strcmp("delta", CHAR(STRING_PTR(names)[i])) == 0) {
+                    if (!isReal(VECTOR_ELT(list, i))  ||
+                        length(VECTOR_ELT(list, i)) != 1) {
+                        throwError("invalid value for parameter '" <<
+                                   CHAR(STRING_PTR(names)[i]) << "'");
+                    }
+                    m_Delta = REAL(VECTOR_ELT(list, i))[0];
+                } else if (strcmp("maxtau", CHAR(STRING_PTR(names)[i])) == 0) {
+                    if (!isReal(VECTOR_ELT(list, i))  ||
+                        length(VECTOR_ELT(list, i)) != 1) {
+                        throwError("invalid value for parameter '" <<
+                                   CHAR(STRING_PTR(names)[i]) << "'");
+                    }
+                    m_MaxTau = REAL(VECTOR_ELT(list, i))[0];
+                } else if (strcmp("extraChecks",
+                                  CHAR(STRING_PTR(names)[i])) == 0) {
+                    if (!isLogical(VECTOR_ELT(list, i))  ||
+                        length(VECTOR_ELT(list, i)) != 1) {
+                        throwError("invalid value for parameter '" <<
+                                   CHAR(STRING_PTR(names)[i]) << "'");
+                    }
+                    m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
+                } else if (strcmp("verbose",
+                                  CHAR(STRING_PTR(names)[i])) == 0) {
+                    if (!isInteger(VECTOR_ELT(list, i))  ||
+                        length(VECTOR_ELT(list, i)) != 1) {
+                        throwError("invalid value for parameter '" <<
+                                   CHAR(STRING_PTR(names)[i]) << "'");
+                    }
+                    m_VerboseTracing = INTEGER(VECTOR_ELT(list, i))[0];
+                } else {
+                    warning("ignoring unknown parameter '%s'",
+                            CHAR(STRING_PTR(names)[i]));
                 }
-                m_Epsilon = REAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("delta", CHAR(STRING_PTR(names)[i])) == 0) {
-                if (!isReal(VECTOR_ELT(list, i))  ||
-                    length(VECTOR_ELT(list, i)) != 1) {
-                    throwError("invalid value for parameter '" <<
-                               CHAR(STRING_PTR(names)[i]) << "'");
-                }
-                m_Delta = REAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("maxtau", CHAR(STRING_PTR(names)[i])) == 0) {
-                if (!isReal(VECTOR_ELT(list, i))  ||
-                    length(VECTOR_ELT(list, i)) != 1) {
-                    throwError("invalid value for parameter '" <<
-                               CHAR(STRING_PTR(names)[i]) << "'");
-                }
-                m_MaxTau = REAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("extraChecks",
-                              CHAR(STRING_PTR(names)[i])) == 0) {
-                if (!isLogical(VECTOR_ELT(list, i))  ||
-                    length(VECTOR_ELT(list, i)) != 1) {
-                    throwError("invalid value for parameter '" <<
-                               CHAR(STRING_PTR(names)[i]) << "'");
-                }
-                m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
-            } else if (strcmp("verbose",
-                              CHAR(STRING_PTR(names)[i])) == 0) {
-                if (!isInteger(VECTOR_ELT(list, i))  ||
-                    length(VECTOR_ELT(list, i)) != 1) {
-                    throwError("invalid value for parameter '" <<
-                               CHAR(STRING_PTR(names)[i]) << "'");
-                }
-                m_VerboseTracing = INTEGER(VECTOR_ELT(list, i))[0];
-            } else {
-                warning("ignoring unknown parameter '%s'",
-                        CHAR(STRING_PTR(names)[i]));
             }
+        } catch (...) {
+            UNPROTECT(1);
+            throw;
         }
+        UNPROTECT(1);
     }
 
     void EvaluateATLUntil(double tF) {
@@ -346,13 +353,16 @@ public:
         if (m_TransByCat[eHalting].size() == 0) {
             return GetTimeSeriesSEXP();
         } else {
-            CRList res(2, true);
-            res.SetSEXP(0, GetTimeSeriesSEXP(), "dynamics");
-            CRVector<int> lastTrans(1, false);
+            CRList res(2);
+            PROTECT(res);
+            res.SetSEXP(0, PROTECT(GetTimeSeriesSEXP()), "dynamics");
+            UNPROTECT(1);
+            CRVector<int> lastTrans(1);
             lastTrans[0] = (m_LastTransition < 0  ||
                             m_TransCats[m_LastTransition] != eHalting) ?
                 NA_INTEGER : m_LastTransition+1;
             res.SetSEXP(1, lastTrans, "haltingTransition");
+            UNPROTECT(1);
             return res;
         }
     }
@@ -682,7 +692,8 @@ void CStochasticEqns::x_SetCat(SEXP trans, ETransCat cat) {
             }
         }
     } else {
-        CRVector<int> w(coerceVector(trans, INTSXP), true);
+        CRVector<int> w(PROTECT(coerceVector(trans, INTSXP)));
+        UNPROTECT(1);
         for (unsigned int i = 0;  i < w.size();  ++i) {
             if (w[i] > (int) m_TransCats.size()) {
                 throwError("one of your list(s) of transitions references a "
@@ -1358,4 +1369,15 @@ extern "C" {
             return R_NilValue;
         }
     }
+
+    const R_CallMethodDef callMethods[] = {
+	{"simAdaptiveTau", (DL_FUNC)&simAdaptiveTau, 11},
+	{"simExact", (DL_FUNC)&simExact, 5},
+	{NULL, NULL, 0}
+    };
+    void R_init_adaptivetau(DllInfo *dll) {
+	R_registerRoutines(dll, NULL, callMethods, NULL, NULL);
+	R_useDynamicSymbols(dll, FALSE);
+    }
+
 }
