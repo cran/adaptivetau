@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 328 2016-09-19 15:31:39Z pjohnson $
+/* $Id: adaptivetau.cpp 348 2019-03-19 19:49:49Z pjohnson $
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -87,13 +87,13 @@ public:
         // allows easy calling of R function to calculate rates)
         m_NumStates = length(initVal);
         SEXP x;
-        PROTECT(x = allocVector(REALSXP, m_NumStates));
+        x = PROTECT(allocVector(REALSXP, m_NumStates));//protected until ~CStochasticEqns
         copyVector(x, coerceVector(initVal,REALSXP));
         if (isNull(getAttrib(initVal, R_NamesSymbol))) {
             m_VarNames = NULL;
         } else {
             SEXP namesO = PROTECT(getAttrib(initVal, R_NamesSymbol));
-            PROTECT(m_VarNames = allocVector(STRSXP, length(namesO)));
+            m_VarNames = PROTECT(allocVector(STRSXP, length(namesO)));
             copyVector(m_VarNames, namesO);
             setAttrib(x, R_NamesSymbol, m_VarNames);
             UNPROTECT(2);
@@ -104,7 +104,6 @@ public:
         // copy Nu matrix into my own sparse matrix data structure
         if (isMatrix(nu)) { //old matrix data structure
             CRMatrix<int> mat(PROTECT(coerceVector(nu,INTSXP)));
-            UNPROTECT(1);
             m_Nu.resize(mat.ncol());
             for (int i = 0;  i < mat.nrow();  ++i) {
                 for (int j = 0;  j < mat.ncol();  ++j) {
@@ -115,6 +114,7 @@ public:
                     }
                 }
             }
+            UNPROTECT(1);
         } else { //list (newer, sparse data structure)
             CRList list(nu);
             m_Nu.resize(list.size());
@@ -180,14 +180,14 @@ public:
         // prepare R function for evaluation by setting up arguments
         // (current X values, parameters, current time)
         SEXP s_time;
-        PROTECT(s_time = allocVector(REALSXP, 1));
+        s_time = PROTECT(allocVector(REALSXP, 1));//protected until ~CStochasticEqns
         m_T = REAL(s_time);
-        PROTECT(m_RateFunc = lang4(rateFunc, x, params, s_time));
+        m_RateFunc = PROTECT(lang4(rateFunc, x, params, s_time));//protected until ~CStochasticEqns
         if (!rateJacobianFunc  ||  isNull(rateJacobianFunc)) {
             m_RateJacobianFunc = NULL;
         } else {
             PROTECT(m_RateJacobianFunc = lang4(rateJacobianFunc, x,
-                                               params, s_time));
+                                               params, s_time)); //protected until ~CStochasticEqns
         }
         m_Rates = NULL;
 
@@ -211,7 +211,7 @@ public:
         if (!maxTauFunc  ||  isNull(maxTauFunc)) {
             m_MaxTauFunc = NULL;
         } else {
-            PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params, s_time));
+            PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params, s_time));//protected until ~CStochasticEqns
         }
 
         //check initial conditions to make sure legit
@@ -239,7 +239,7 @@ public:
         GetRNGstate();
     }
     ~CStochasticEqns(void) {
-        int cnt = 3;
+        int cnt = 4;
         if (m_RateJacobianFunc != NULL) {
             ++cnt;
         }
@@ -247,9 +247,6 @@ public:
             ++cnt;
         }
         if (m_MaxTauFunc != NULL) {
-            ++cnt;
-        }
-        if (m_VarNames != NULL) {
             ++cnt;
         }
         UNPROTECT(cnt);
@@ -356,13 +353,12 @@ public:
             CRList res(2);
             PROTECT(res);
             res.SetSEXP(0, PROTECT(GetTimeSeriesSEXP()), "dynamics");
-            UNPROTECT(1);
             CRVector<int> lastTrans(1);
             lastTrans[0] = (m_LastTransition < 0  ||
                             m_TransCats[m_LastTransition] != eHalting) ?
                 NA_INTEGER : m_LastTransition+1;
             res.SetSEXP(1, lastTrans, "haltingTransition");
-            UNPROTECT(1);
+            UNPROTECT(2);
             return res;
         }
     }
@@ -471,9 +467,9 @@ protected:
         // make sure our rates are protected!
         if (m_Rates != NULL) { 
             UNPROTECT(1);
+            m_Rates = NULL;
         }
-        SEXP res = eval(m_RateFunc, R_EmptyEnv);
-        PROTECT(res);
+        SEXP res = PROTECT(eval(m_RateFunc, R_EmptyEnv));
         m_Rates = REAL(res);
 
         if ((unsigned int) length(res) != m_Nu.size()) {

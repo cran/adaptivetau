@@ -32,9 +32,11 @@ template<typename Tlogic, typename Timpl = Tlogic> class CRVectorBase {
 protected:
     //data must correspond to SEXP!
     CRVectorBase(SEXP v, Timpl* fconverter (SEXP x)) {
+        PROTECT(v);
         m_N = Rf_length(v);
         m_Data = fconverter(v);
         m_Sexp = v;
+        UNPROTECT(1);
     }
 public:
     int GetN(void) const {return m_N;}
@@ -237,7 +239,7 @@ public:
 
     void SetColName(int j, const char* name) {
         if (Rf_isNull(Rf_getAttrib(m_Sexp, R_DimNamesSymbol))) {
-            CRList dims(2, false);
+            CRList dims(2);
             Rf_setAttrib(m_Sexp, R_DimNamesSymbol, dims);
         }
         if (Rf_isNull(VECTOR_ELT(Rf_getAttrib(m_Sexp, R_DimNamesSymbol), 1))) {
