@@ -14,7 +14,7 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
                 jacobianFunc = NULL, maxTauFunc = NULL,
                 deterministic = NULL, halting = NULL,
                 relratechange = rep(1, length(init.values)),
-                tl.params = NULL)
+                tl.params = NULL, reportTransitions = FALSE)
 }
 \arguments{
   \item{init.values}{
@@ -129,6 +129,10 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
       }
     }
   }
+  \item{reportTransitions}{default FALSE; whether to include a
+    matrix of executed transitions per time interval in the output
+    (alongside with the states at each time point).
+  }
 }
 \details{
   The initial values, transition matrix & transition rates must all be
@@ -177,6 +181,13 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
   without halting transitions.  The second (\sQuote{haltingTransition})
   gives the number of the transition that halted the simulation, or NA
   otherwise.
+
+  If the \sQuote{reportTransitions} option is used, then a list is
+  returned with two elements (or three, if combined with halting
+  transitions).  The final element of the list is a two-dimensional
+  matrix called \sQuote{transitions} with a row for each timepoint and
+  columns giving the number of times each transition was executed in the
+  between the current time and the previous time.
 }
 \note{
   Development of this package was supported in part by National Science

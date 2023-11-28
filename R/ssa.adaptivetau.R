@@ -3,18 +3,18 @@ function(init.values, transitions, rateFunc, params, tf,
          jacobianFunc = NULL, maxTauFunc = NULL,
          deterministic = NULL, halting = NULL,
          relratechange=rep(1, length(init.values)),
-         tl.params = NULL) {
+         tl.params = NULL, reportTransitions = FALSE) {
   return(.Call('simAdaptiveTau', PACKAGE='adaptivetau',
                init.values, transitions,
                rateFunc, jacobianFunc,
                params, tf, deterministic, halting,
-               relratechange, tl.params, maxTauFunc))
+               relratechange, tl.params, maxTauFunc, reportTransitions))
 }
 
 ssa.exact <-
-function(init.values, transitions, rateFunc, params, tf) {
+function(init.values, transitions, rateFunc, params, tf, reportTransitions = FALSE) {
   return(.Call('simExact', PACKAGE='adaptivetau',
-               init.values, transitions, rateFunc, params, tf))
+               init.values, transitions, rateFunc, params, tf, reportTransitions))
 }
 
 ssa.maketrans <- function(variables, ...) {

@@ -9,7 +9,8 @@ Exact stochastic simulation algorithm
   Gillespie simulation algorithm).
 }
 \usage{
-ssa.exact(init.values, transitions, rateFunc, params, tf)
+ssa.exact(init.values, transitions, rateFunc, params, tf,
+          reportTransitions = FALSE)
 }
 \arguments{
   \item{init.values}{
@@ -45,6 +46,10 @@ ssa.exact(init.values, transitions, rateFunc, params, tf)
     final time of simulation.  Due to the approximate nature of the
     tau-leaping algorithm, the simulation may overshoot this time somewhat.
   }
+  \item{reportTransitions}{default FALSE; whether to include a
+    matrix of executed transitions per time interval in the output
+    (alongside with the states at each time point).
+  }
 }
 \details{
   This function is supplied as a bonus with the adaptivetau package,
@@ -64,6 +69,13 @@ ssa.exact(init.values, transitions, rateFunc, params, tf)
   Two-dimensional matrix with rows for every timepoint at which the
   rateFunc was evaluated and columns giving the value for every state
   variable at that time.  The first column specifies the time.
+
+  If the \sQuote{reportTransitions} option is used, then a list is
+  returned with two elements.  The first element is the
+  \sQuote{dynamics} matrix described above.  The second is a
+  two-dimensional matrix called \sQuote{transitions} with a row for each
+  timepoint and columns giving the number of times each transition was
+  executed between the current time and the previous time.
 }
 \author{
   Philip Johnson

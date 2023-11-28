@@ -82,7 +82,7 @@ public:
     CStochasticEqns(SEXP initVal, SEXP nu,
                     SEXP rateFunc, SEXP rateJacobianFunc,
                     SEXP params, double* changeBound, SEXP maxTauFunc,
-                    SEXP detTrans, SEXP haltTrans) {
+                    SEXP detTrans, SEXP haltTrans, SEXP reportTransitions) {
         // copy initial values into new vector (keeping in SEXP vector
         // allows easy calling of R function to calculate rates)
         m_NumStates = length(initVal);
@@ -205,6 +205,7 @@ public:
         m_MaxSteps = 0; // special case 0 == no limit
 
         //useful additional parameters
+        m_RecordTransitionTimeSeries = LOGICAL(reportTransitions)[0];
         m_ExtraChecks = true;
         m_VerboseTracing = 0;
         m_RateChangeBound = changeBound;
@@ -308,6 +309,10 @@ public:
         unsigned int c = 0;
         //add initial conditions to time series
         m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
+        if (m_RecordTransitionTimeSeries) {
+            m_ExecutedTransitions.assign(m_Nu.size(), 0);
+            m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
+        }
         //main loop
         while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)  &&
                (m_LastTransition < 0  ||
@@ -328,6 +333,10 @@ public:
         unsigned int c = 0;
         //add initial conditions to time series
         m_TimeSeries.push_back(STimePoint(0, m_X, m_NumStates));
+        if (m_RecordTransitionTimeSeries) {
+            m_ExecutedTransitions.assign(m_Nu.size(), 0);
+            m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
+        }
         m_LastTransition = -1;
         //main loop
         while (*m_T < tF  &&  (m_MaxSteps == 0 || c < m_MaxSteps)  &&
@@ -348,9 +357,18 @@ public:
 
     SEXP GetResult(void) const {
         if (m_TransByCat[eHalting].size() == 0) {
-            return GetTimeSeriesSEXP();
+            if (m_RecordTransitionTimeSeries) {
+                CRList res(2);
+                PROTECT(res);
+                res.SetSEXP(0, PROTECT(GetTimeSeriesSEXP()), "dynamics");
+                res.SetSEXP(1, PROTECT(GetTransitionTimeSeriesSEXP()), "transitions");
+                UNPROTECT(3);
+                return res;
+            } else {
+                return GetTimeSeriesSEXP();
+            }
         } else {
-            CRList res(2);
+            CRList res(m_RecordTransitionTimeSeries ? 3 : 2);
             PROTECT(res);
             res.SetSEXP(0, PROTECT(GetTimeSeriesSEXP()), "dynamics");
             CRVector<int> lastTrans(1);
@@ -358,6 +376,10 @@ public:
                             m_TransCats[m_LastTransition] != eHalting) ?
                 NA_INTEGER : m_LastTransition+1;
             res.SetSEXP(1, lastTrans, "haltingTransition");
+            if (m_RecordTransitionTimeSeries) {
+                res.SetSEXP(2, PROTECT(GetTransitionTimeSeriesSEXP()), "transitions");
+                UNPROTECT(1);
+            }
             UNPROTECT(2);
             return res;
         }
@@ -392,6 +414,18 @@ public:
         setAttrib(res, R_DimNamesSymbol, dimnames);
 
         UNPROTECT(3);
+        return res;
+    }
+    SEXP GetTransitionTimeSeriesSEXP(void) const {
+        SEXP res;
+        PROTECT(res = allocMatrix(REALSXP, m_TimeSeries.size(), m_Nu.size()));
+        double *rvals = REAL(res);
+        for (unsigned int t = 0;  t < m_TimeSeries.size();  ++t) {
+            for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
+                rvals[j * m_TimeSeries.size() + t] = m_TransitionTimeSeries[t][j];
+            }
+        }
+        UNPROTECT(1);
         return res;
     }
 
@@ -430,6 +464,8 @@ protected:
             }
         }
     };
+    typedef vector<double> TExecutedTransitions;
+    typedef vector<TExecutedTransitions> TTransitionTimeSeries;
 
 protected:
     void x_IdentifyBalancedPairs(void);
@@ -610,6 +646,9 @@ private:
                         //the rate function does have a bug, this will
                         //give a more meaningful error message.
     int m_VerboseTracing; //trace algorithm verbosely
+    bool m_RecordTransitionTimeSeries; //whether to record transitions
+                                       //as a function of time in
+                                       //addition to state.
 
     // parameters to tau leaping algorithm
     unsigned int m_Ncritical;
@@ -628,6 +667,7 @@ private:
     TRates m_Rates; // *current* rates (must be updated if m_X changes!)
     EStepType m_PrevStepType; // type of last step
     int m_LastTransition; // id of transition taken if critical/exact; -1 o.w.
+    TExecutedTransitions m_ExecutedTransitions; // counts of transitions taken in current step
 
     // constant variables
     unsigned int m_NumStates; //total number of states
@@ -643,6 +683,7 @@ private:
     SEXP m_MaxTauFunc; //R function to calculate maximum leap given curr. state
 
     CTimeSeries m_TimeSeries;
+    TTransitionTimeSeries m_TransitionTimeSeries; // record transitions in previous time interval
 };
 
 
@@ -753,6 +794,9 @@ void CStochasticEqns::x_AdvanceDeterministic(double deltaT, bool clamp) {
                 m_X[m_Nu[*j][i].m_State] = 0;
             }
         }
+        if (m_RecordTransitionTimeSeries) {
+            m_ExecutedTransitions[*j] += m_Rates[*j];
+        }
     }
 }
 
@@ -761,6 +805,7 @@ void CStochasticEqns::x_AdvanceDeterministic(double deltaT, bool clamp) {
 // POST: id of transition taken (if none, then -1) & time series updated.
 void CStochasticEqns::x_SingleStepExact(double tf) {
     m_LastTransition = -1;
+    m_ExecutedTransitions.assign(m_Nu.size(), 0);
     double stochRate = 0;
     double detRate = 0;
     for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
@@ -794,6 +839,9 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
         for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
             m_X[m_Nu[j][i].m_State] += m_Nu[j][i].m_Mag;
         }
+        if (m_RecordTransitionTimeSeries) {
+            ++m_ExecutedTransitions[j];
+        }
         m_LastTransition = j;
     }
 
@@ -802,6 +850,9 @@ void CStochasticEqns::x_SingleStepExact(double tf) {
     x_AdvanceDeterministic(tau, true);
     *m_T += tau;
     m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
+    if (m_RecordTransitionTimeSeries) {
+        m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
+    }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1029,6 +1080,14 @@ void CStochasticEqns::x_SingleStepITL(double tau) {
     if (!converged) {
         warning("ITL solution did not converge!");
     }
+    if (m_RecordTransitionTimeSeries) {
+        for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
+             j != m_TransByCat[eNormal].end();  ++j) {
+            //round to integer # of transitions
+            ++m_ExecutedTransitions[*j] +=
+                floor(m_Rates[*j] + numTransitions[*j] + origRates[*j] + 0.5);
+        }
+    }
 
     //restore original rates to execute deterministic transitions
     memcpy(m_Rates, origRates, sizeof(double)*m_NumStates);
@@ -1085,6 +1144,9 @@ void CStochasticEqns::x_SingleStepETL(double tau) {
             for (unsigned int i = 0;  i < m_Nu[*j].size();  ++i) {
                 m_X[m_Nu[*j][i].m_State] +=  k * m_Nu[*j][i].m_Mag;
             }
+            if (m_RecordTransitionTimeSeries) {
+                m_ExecutedTransitions[*j] += k;
+            }
         }
     }
     if (m_VerboseTracing >= 2) {
@@ -1111,6 +1173,7 @@ void CStochasticEqns::x_SingleStepETL(double tau) {
 // Physics (2007).
 void CStochasticEqns::x_SingleStepATL(double tf) {
     m_LastTransition = -1;
+    m_ExecutedTransitions.assign(m_Nu.size(), 0);
     EStepType stepType;
 
     //identify "critical" transitions
@@ -1158,6 +1221,9 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
     if (criticalRate + noncritRate == 0) {
         *m_T = tf;//numeric_limits<double>::infinity();
         m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
+        if (m_RecordTransitionTimeSeries) {
+            m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
+        }
         return;
     }
     if (!R_finite(criticalRate + noncritRate)) {
@@ -1243,6 +1309,9 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                         REprintf("%f:    executing critical transition #%i\n",
                                  *m_T, j+1);
                     }
+                    if (m_RecordTransitionTimeSeries) {
+                        ++m_ExecutedTransitions[j];
+                    }
                     for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
                         m_X[m_Nu[j][i].m_State] +=  m_Nu[j][i].m_Mag;
                         if (m_X[m_Nu[j][i].m_State] < 0) {
@@ -1256,6 +1325,9 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 }
 
                 m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
+                if (m_RecordTransitionTimeSeries) {
+                    m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
+                }
                 if (m_VerboseTracing >= 2) {
                     REprintf("%f -- ", *m_T);
                     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
@@ -1267,6 +1339,9 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 tauTooBig = true;
                 if (m_VerboseTracing >= 1) {
                     REprintf("%f:    tau too big; cutting in half\n", *m_T);
+                }
+                if (m_RecordTransitionTimeSeries) {
+                    m_ExecutedTransitions.assign(m_Nu.size(), 0);
                 }
                 tau1 /= 2;
             }
@@ -1284,7 +1359,8 @@ extern "C" {
                         SEXP s_params, SEXP s_tf,
                         SEXP s_deterministic, SEXP s_halting,
                         SEXP s_changebound,
-                        SEXP s_tlparams, SEXP s_fMaxtau) {
+                        SEXP s_tlparams, SEXP s_fMaxtau,
+                        SEXP s_reportTransitions) {
         try{
         if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
             error("invalid vector of initial values");
@@ -1313,28 +1389,32 @@ extern "C" {
         if (!isNull(s_fMaxtau)  &&  !isFunction(s_fMaxtau)) {
             error("invalid maxTau function");
         }
+        if (isNull(s_reportTransitions)  ||  !isLogical(s_reportTransitions)) {
+            error("invalid value for reportTransitions");
+        }
 
         CStochasticEqns eqns(s_x0, s_nu,
                              s_f, s_fJacob, s_params, REAL(s_changebound),
-                             s_fMaxtau, s_deterministic, s_halting);
+                             s_fMaxtau, s_deterministic, s_halting, s_reportTransitions);
         if (!isNull(s_tlparams)) {
             eqns.SetTLParams(s_tlparams);
         }
         try {
             eqns.EvaluateATLUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
         } catch (CEarlyExit &e) {
-            warning(e.what());
+            warning("%s", e.what());
         }
         return eqns.GetResult();
         } catch (exception &e) {
-            error(e.what());
+            error("%s", e.what());
             return R_NilValue;
         }
     }
     
     //-----------------------------------------------------------------------
 
-    SEXP simExact(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_params, SEXP s_tf) {
+    SEXP simExact(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_params, SEXP s_tf,
+                  SEXP s_reportTransitions) {
         try {
         if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
             error("invalid vector of initial values");
@@ -1350,25 +1430,28 @@ extern "C" {
         if (!(isReal(s_tf)  ||  isInteger(s_tf))  ||  length(s_tf) != 1) {
             error("invalid final time");
         }
+        if (isNull(s_reportTransitions)  ||  !isLogical(s_reportTransitions)) {
+            error("invalid value for reportTransitions");
+        }
 
         CStochasticEqns eqns(s_x0, s_nu,
                              s_f, NULL, s_params, NULL, NULL,
-                             R_NilValue, R_NilValue);
+                             R_NilValue, R_NilValue, s_reportTransitions);
         try {
             eqns.EvaluateExactUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
         } catch (CEarlyExit &e) {
-            warning(e.what());
+            warning("%s", e.what());
         }
         return eqns.GetResult();
         } catch (exception &e) {
-            error(e.what());
+            error("%s", e.what());
             return R_NilValue;
         }
     }
 
     const R_CallMethodDef callMethods[] = {
-	{"simAdaptiveTau", (DL_FUNC)&simAdaptiveTau, 11},
-	{"simExact", (DL_FUNC)&simExact, 5},
+	{"simAdaptiveTau", (DL_FUNC)&simAdaptiveTau, 12},
+	{"simExact", (DL_FUNC)&simExact, 6},
 	{NULL, NULL, 0}
     };
     void R_init_adaptivetau(DllInfo *dll) {

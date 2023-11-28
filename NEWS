@@ -1,4 +1,11 @@
 ----------------------------
+Version 2.3 - 28 Nov 2023
+----------------------------
+  - add option to report executed transitions
+  - explicitly use format string with "error" and "warning" functions
+    to pass cran automatic checks.
+
+----------------------------
 Version 2.2-3 - 19 March 2019
 ----------------------------
   - fix clang compiler error
