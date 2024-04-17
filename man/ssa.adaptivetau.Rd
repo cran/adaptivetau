@@ -74,11 +74,10 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     be correct.
   }
   \item{maxTauFunc}{ R function that returns single real number giving
-    the maximum tau leap allowable from the current state.  Only
-    executed if the adaptive tau algorithm wants to leap in a step
-    greater than tl.params$maxtau (should only need to use if your rate
-    functions have a dramatically discontinuous first derivative).
-    Takes same parameters as rateFunc.
+    the maximum time step allowable from the current state.  Only
+    called if the adaptive tau algorithm wants to leap in a step
+    greater than tl.params$maxtau value. Takes same parameters as
+    rateFunc.
   }
   \item{deterministic}{
     Specify transitions to be treated as deterministic.  If not NULL,
@@ -109,8 +108,8 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
     1)?  If not, then you need to set this variable to be greater than 1.
   }
   \item{tl.params}{
-    List of various parameters to the tau-leaping algorithm itself (best
-    explained by reading original reference):
+    Parameters to the tau-leaping algorithm itself (epsilon and delta
+    are best explained by reading the original reference):
     \describe{
       \item{epsilon}{default 0.05; increasing will make bigger leaps
         resulting in potentially more error}
@@ -118,8 +117,9 @@ ssa.adaptivetau(init.values, transitions, rateFunc, params, tf,
         rates must be before we classify them as in
         partial-equilibrium.  Only applies to the implicit tau routine.
       }
-      \item{maxtau}{default Inf; maximum leap allowed.  Should only need
-        to specify if rate functions are drastically non-smooth.
+      \item{maxtau}{default Inf; maximum time step allowed.  Should only need
+        to specify if rate functions are drastically non-smooth or if your
+        rate function explictly depends on time.
       }
       \item{extraChecks}{default TRUE; whether to perform a battery of
         validity checks on the state variables and rates after every

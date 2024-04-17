@@ -1,4 +1,14 @@
 ----------------------------
+Version 2.3-1 - 17 Apr 2024
+----------------------------
+  - previously, the maxtau argument only constrained tau-leaping
+    steps.  Now modified to also constrain exact steps and the jump to
+    the final time that occurs if all transition rates are 0; these
+    changes allow for rate functions that are strongly time-dependent.
+  - clarify description of maxtau argument in help page
+  - eliminate use of Rinternal #defines that strip the Rf_ prefix
+
+----------------------------
 Version 2.3 - 28 Nov 2023
 ----------------------------
   - add option to report executed transitions

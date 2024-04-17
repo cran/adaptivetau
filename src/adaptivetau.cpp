@@ -1,4 +1,4 @@
-/* $Id: adaptivetau.cpp 348 2019-03-19 19:49:49Z pjohnson $
+/* $Id$
     --------------------------------------------------------------------------
     C++ implementation of the "adaptive tau-leaping" algorithm described by
     Cao Y, Gillespie DT, Petzold LR. The Journal of Chemical Physics (2007).
@@ -85,25 +85,25 @@ public:
                     SEXP detTrans, SEXP haltTrans, SEXP reportTransitions) {
         // copy initial values into new vector (keeping in SEXP vector
         // allows easy calling of R function to calculate rates)
-        m_NumStates = length(initVal);
+        m_NumStates = Rf_length(initVal);
         SEXP x;
-        x = PROTECT(allocVector(REALSXP, m_NumStates));//protected until ~CStochasticEqns
-        copyVector(x, coerceVector(initVal,REALSXP));
-        if (isNull(getAttrib(initVal, R_NamesSymbol))) {
+        x = PROTECT(Rf_allocVector(REALSXP, m_NumStates));//protected until ~CStochasticEqns
+        Rf_copyVector(x, Rf_coerceVector(initVal,REALSXP));
+        if (Rf_isNull(Rf_getAttrib(initVal, R_NamesSymbol))) {
             m_VarNames = NULL;
         } else {
-            SEXP namesO = PROTECT(getAttrib(initVal, R_NamesSymbol));
-            m_VarNames = PROTECT(allocVector(STRSXP, length(namesO)));
-            copyVector(m_VarNames, namesO);
-            setAttrib(x, R_NamesSymbol, m_VarNames);
+            SEXP namesO = PROTECT(Rf_getAttrib(initVal, R_NamesSymbol));
+            m_VarNames = PROTECT(Rf_allocVector(STRSXP, Rf_length(namesO)));
+            Rf_copyVector(m_VarNames, namesO);
+            Rf_setAttrib(x, R_NamesSymbol, m_VarNames);
             UNPROTECT(2);
             PROTECT(m_VarNames);
         }
         m_X = REAL(x);
 
         // copy Nu matrix into my own sparse matrix data structure
-        if (isMatrix(nu)) { //old matrix data structure
-            CRMatrix<int> mat(PROTECT(coerceVector(nu,INTSXP)));
+        if (Rf_isMatrix(nu)) { //old matrix data structure
+            CRMatrix<int> mat(PROTECT(Rf_coerceVector(nu,INTSXP)));
             m_Nu.resize(mat.ncol());
             for (int i = 0;  i < mat.nrow();  ++i) {
                 for (int j = 0;  j < mat.ncol();  ++j) {
@@ -119,12 +119,12 @@ public:
             CRList list(nu);
             m_Nu.resize(list.size());
             for (unsigned int j = 0;  j < list.size();  ++j) {
-                if (!isInteger(list[j])  &&  !isReal(list[j])) {
+                if (!Rf_isInteger(list[j])  &&  !Rf_isReal(list[j])) {
                     throwError("the sparse transition matrix representation "
                                "must be a list of either integer or double "
                                "vectors.");
                 }
-                const CRVector<int> trans(PROTECT(coerceVector(list[j],INTSXP)));
+                const CRVector<int> trans(PROTECT(Rf_coerceVector(list[j],INTSXP)));
                 UNPROTECT(1);
                 m_Nu[j].resize(trans.size());
                 for (unsigned int i = 0;  i < m_Nu[j].size();  ++i) {
@@ -135,7 +135,7 @@ public:
                                    "a corresponding state variable.");
                     }
                     if (m_VarNames != NULL) {
-                        for (state = 0;  state < length(m_VarNames)  &&
+                        for (state = 0;  state < Rf_length(m_VarNames)  &&
                                  strcmp(CHAR(STRING_PTR(m_VarNames)[state]),
                                         stateStr) != 0;
                              ++state);
@@ -180,13 +180,13 @@ public:
         // prepare R function for evaluation by setting up arguments
         // (current X values, parameters, current time)
         SEXP s_time;
-        s_time = PROTECT(allocVector(REALSXP, 1));//protected until ~CStochasticEqns
+        s_time = PROTECT(Rf_allocVector(REALSXP, 1));//protected until ~CStochasticEqns
         m_T = REAL(s_time);
-        m_RateFunc = PROTECT(lang4(rateFunc, x, params, s_time));//protected until ~CStochasticEqns
-        if (!rateJacobianFunc  ||  isNull(rateJacobianFunc)) {
+        m_RateFunc = PROTECT(Rf_lang4(rateFunc, x, params, s_time));//protected until ~CStochasticEqns
+        if (!rateJacobianFunc  ||  Rf_isNull(rateJacobianFunc)) {
             m_RateJacobianFunc = NULL;
         } else {
-            PROTECT(m_RateJacobianFunc = lang4(rateJacobianFunc, x,
+            PROTECT(m_RateJacobianFunc = Rf_lang4(rateJacobianFunc, x,
                                                params, s_time)); //protected until ~CStochasticEqns
         }
         m_Rates = NULL;
@@ -209,10 +209,10 @@ public:
         m_ExtraChecks = true;
         m_VerboseTracing = 0;
         m_RateChangeBound = changeBound;
-        if (!maxTauFunc  ||  isNull(maxTauFunc)) {
+        if (!maxTauFunc  ||  Rf_isNull(maxTauFunc)) {
             m_MaxTauFunc = NULL;
         } else {
-            PROTECT(m_MaxTauFunc = lang4(maxTauFunc, x, params, s_time));//protected until ~CStochasticEqns
+            PROTECT(m_MaxTauFunc = Rf_lang4(maxTauFunc, x, params, s_time));//protected until ~CStochasticEqns
         }
 
         //check initial conditions to make sure legit
@@ -253,48 +253,48 @@ public:
         UNPROTECT(cnt);
     }
     void SetTLParams(SEXP list) {
-        SEXP names = PROTECT(getAttrib(list, R_NamesSymbol));
+        SEXP names = PROTECT(Rf_getAttrib(list, R_NamesSymbol));
         try {
-            for (int i = 0;  i < length(names);  ++i) {
+            for (int i = 0;  i < Rf_length(names);  ++i) {
                 if (strcmp("epsilon", CHAR(STRING_PTR(names)[i])) == 0) {
-                    if (!isReal(VECTOR_ELT(list, i))  ||
-                        length(VECTOR_ELT(list, i)) != 1) {
+                    if (!Rf_isReal(VECTOR_ELT(list, i))  ||
+                        Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
                                    CHAR(STRING_PTR(names)[i]) << "'");
                     }
                     m_Epsilon = REAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("delta", CHAR(STRING_PTR(names)[i])) == 0) {
-                    if (!isReal(VECTOR_ELT(list, i))  ||
-                        length(VECTOR_ELT(list, i)) != 1) {
+                    if (!Rf_isReal(VECTOR_ELT(list, i))  ||
+                        Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
                                    CHAR(STRING_PTR(names)[i]) << "'");
                     }
                     m_Delta = REAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("maxtau", CHAR(STRING_PTR(names)[i])) == 0) {
-                    if (!isReal(VECTOR_ELT(list, i))  ||
-                        length(VECTOR_ELT(list, i)) != 1) {
+                    if (!Rf_isReal(VECTOR_ELT(list, i))  ||
+                        Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
                                    CHAR(STRING_PTR(names)[i]) << "'");
                     }
                     m_MaxTau = REAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("extraChecks",
                                   CHAR(STRING_PTR(names)[i])) == 0) {
-                    if (!isLogical(VECTOR_ELT(list, i))  ||
-                        length(VECTOR_ELT(list, i)) != 1) {
+                    if (!Rf_isLogical(VECTOR_ELT(list, i))  ||
+                        Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
                                    CHAR(STRING_PTR(names)[i]) << "'");
                     }
                     m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("verbose",
                                   CHAR(STRING_PTR(names)[i])) == 0) {
-                    if (!isInteger(VECTOR_ELT(list, i))  ||
-                        length(VECTOR_ELT(list, i)) != 1) {
+                    if (!Rf_isInteger(VECTOR_ELT(list, i))  ||
+                        Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
                                    CHAR(STRING_PTR(names)[i]) << "'");
                     }
                     m_VerboseTracing = INTEGER(VECTOR_ELT(list, i))[0];
                 } else {
-                    warning("ignoring unknown parameter '%s'",
+                    Rf_warning("ignoring unknown parameter '%s'",
                             CHAR(STRING_PTR(names)[i]));
                 }
             }
@@ -387,7 +387,7 @@ public:
 
     SEXP GetTimeSeriesSEXP(void) const {
         SEXP res;
-        PROTECT(res = allocMatrix(REALSXP, m_TimeSeries.size(), m_NumStates+1));
+        PROTECT(res = Rf_allocMatrix(REALSXP, m_TimeSeries.size(), m_NumStates+1));
         double *rvals = REAL(res);
         for (unsigned int t = 0;  t < m_TimeSeries.size();  ++t) {
             rvals[t] = m_TimeSeries[t].m_T;
@@ -397,28 +397,28 @@ public:
         }
 
         SEXP dimnames, colnames;
-        PROTECT(dimnames = allocVector(VECSXP, 2));
-        PROTECT(colnames = allocVector(VECSXP, m_NumStates+1));
+        PROTECT(dimnames = Rf_allocVector(VECSXP, 2));
+        PROTECT(colnames = Rf_allocVector(VECSXP, m_NumStates+1));
         SET_VECTOR_ELT(dimnames, 1, colnames);
-        SET_VECTOR_ELT(colnames, 0, mkChar("time"));
+        SET_VECTOR_ELT(colnames, 0, Rf_mkChar("time"));
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
-            if (m_VarNames  &&  (unsigned int)length(m_VarNames) > i) {
+            if (m_VarNames  &&  (unsigned int)Rf_length(m_VarNames) > i) {
                 SET_VECTOR_ELT(colnames, i+1,
                                STRING_PTR(m_VarNames)[i]);
             } else {
                 ostringstream oss;
                 oss << "x" << i+1;
-                SET_VECTOR_ELT(colnames, i+1, mkChar(oss.str().c_str()));
+                SET_VECTOR_ELT(colnames, i+1, Rf_mkChar(oss.str().c_str()));
             }
         }
-        setAttrib(res, R_DimNamesSymbol, dimnames);
+        Rf_setAttrib(res, R_DimNamesSymbol, dimnames);
 
         UNPROTECT(3);
         return res;
     }
     SEXP GetTransitionTimeSeriesSEXP(void) const {
         SEXP res;
-        PROTECT(res = allocMatrix(REALSXP, m_TimeSeries.size(), m_Nu.size()));
+        PROTECT(res = Rf_allocMatrix(REALSXP, m_TimeSeries.size(), m_Nu.size()));
         double *rvals = REAL(res);
         for (unsigned int t = 0;  t < m_TimeSeries.size();  ++t) {
             for (unsigned int j = 0;  j < m_Nu.size();  ++j) {
@@ -505,12 +505,12 @@ protected:
             UNPROTECT(1);
             m_Rates = NULL;
         }
-        SEXP res = PROTECT(eval(m_RateFunc, R_EmptyEnv));
+        SEXP res = PROTECT(Rf_eval(m_RateFunc, R_EmptyEnv));
         m_Rates = REAL(res);
 
-        if ((unsigned int) length(res) != m_Nu.size()) {
+        if ((unsigned int) Rf_length(res) != m_Nu.size()) {
             throwError("invalid rate function -- returned number of rates ("
-                       << length(res) << ") is not the same as specified by "
+                       << Rf_length(res) << ") is not the same as specified by "
                        "the transition matrix (" << m_Nu.size() << ")!");
         }
         if (m_ExtraChecks) {
@@ -528,13 +528,13 @@ protected:
         }
     }
     double* x_CalcJacobian(void) {
-        SEXP res = eval(m_RateJacobianFunc, R_EmptyEnv);
-        if (!isMatrix(res)) {
+        SEXP res = Rf_eval(m_RateJacobianFunc, R_EmptyEnv);
+        if (!Rf_isMatrix(res)) {
             throwError("invalid Jacobian function -- should return a " <<
                        m_NumStates << " by " << m_Nu.size() << " matrix");
         }
-        unsigned int nrow = INTEGER(getAttrib(res, R_DimSymbol))[0];
-        unsigned int ncol = INTEGER(getAttrib(res, R_DimSymbol))[1];
+        unsigned int nrow = INTEGER(Rf_getAttrib(res, R_DimSymbol))[0];
+        unsigned int ncol = INTEGER(Rf_getAttrib(res, R_DimSymbol))[1];
         if (nrow != m_NumStates  ||  ncol != m_Nu.size()) {
             throwError ("invalid Jacobian function -- returned a " << nrow
                         << " by " << ncol << " matrix instead of the expected "
@@ -545,8 +545,8 @@ protected:
     }
     double x_CalcUserMaxTau(void) {
         if (!m_MaxTauFunc) { throwError("logic error at line " << __LINE__) }
-        SEXP res = eval(m_MaxTauFunc, R_EmptyEnv);
-        if (length(res) != 1  || !isReal(res)) {
+        SEXP res = Rf_eval(m_MaxTauFunc, R_EmptyEnv);
+        if (Rf_length(res) != 1  || !Rf_isReal(res)) {
             throwError("invalid return value from maxTau function (should be "
                        "a single real number)");
         }
@@ -714,8 +714,8 @@ void CStochasticEqns::x_IdentifyBalancedPairs(void) {
 // PRE : boolean vector flagging transitions as category "cat"
 // POST: appropriate transCats set
 void CStochasticEqns::x_SetCat(SEXP trans, ETransCat cat) {
-    if (!trans  || isNull(trans)) { return; } //NULL may be passed as a flag
-    if (isLogical(trans)) {
+    if (!trans  || Rf_isNull(trans)) { return; } //NULL may be passed as a flag
+    if (Rf_isLogical(trans)) {
         CRVector<bool> logic(trans);
         if (logic.size() > m_TransCats.size()) {
             throwError("length of logical vector specifying deterministic or "
@@ -729,7 +729,7 @@ void CStochasticEqns::x_SetCat(SEXP trans, ETransCat cat) {
             }
         }
     } else {
-        CRVector<int> w(PROTECT(coerceVector(trans, INTSXP)));
+        CRVector<int> w(PROTECT(Rf_coerceVector(trans, INTSXP)));
         UNPROTECT(1);
         for (unsigned int i = 0;  i < w.size();  ++i) {
             if (w[i] > (int) m_TransCats.size()) {
@@ -1031,7 +1031,7 @@ void CStochasticEqns::x_SingleStepITL(double tau) {
         //solve linear eqn
         F77_NAME(dgesv)(&N, &nrhs, matrixA, &N, ipiv, matrixB, &N, &info); 
         if (info != 0) {
-            warning("warning: lapack ran into trouble solving implicit equation");
+            Rf_warning("warning: lapack ran into trouble solving implicit equation");
             break;
         }
         //matrixB now contains solution (change in X)
@@ -1078,7 +1078,7 @@ void CStochasticEqns::x_SingleStepITL(double tau) {
 
     } // end of iterating for Newton's method
     if (!converged) {
-        warning("ITL solution did not converge!");
+        Rf_warning("ITL solution did not converge!");
     }
     if (m_RecordTransitionTimeSeries) {
         for (TTransList::const_iterator j = m_TransByCat[eNormal].begin();
@@ -1218,8 +1218,8 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
     if (debug) {
         cerr << "critical rate: " << criticalRate << "\t" << "noncrit rate: " << noncritRate << endl;
     }
-    if (criticalRate + noncritRate == 0) {
-        *m_T = tf;//numeric_limits<double>::infinity();
+    if (criticalRate + noncritRate == 0  &&  isinf(m_MaxTau)) {
+        *m_T = tf;
         m_TimeSeries.push_back(STimePoint(*m_T, m_X, m_NumStates));
         if (m_RecordTransitionTimeSeries) {
             m_TransitionTimeSeries.push_back(m_ExecutedTransitions);
@@ -1247,11 +1247,12 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
     if (tau1 > tf - *m_T) { //cap at the final simulation time
         tau1 = tf - *m_T;
     }
-    if (tau1 > m_MaxTau) {
-        tau1 = m_MaxTauFunc ? min(tau1, x_CalcUserMaxTau()) : m_MaxTau;
+    double currMaxTau = m_MaxTau;
+    if (tau1 > currMaxTau) {
+        currMaxTau = m_MaxTauFunc ? min(tau1, x_CalcUserMaxTau()) : m_MaxTau;
+        tau1 = currMaxTau;
         if (debug) {
-            cerr << "maxtau: " << tau1 << " (" <<
-                (m_MaxTauFunc ? x_CalcUserMaxTau() : m_MaxTau) << ")" << endl;
+            cerr << "maxtau: " << tau1 << endl;
         }
     }
 
@@ -1269,7 +1270,7 @@ void CStochasticEqns::x_SingleStepATL(double tf) {
                 if (i > 0) {
                     x_UpdateRates();
                 }
-                x_SingleStepExact(tf);
+                x_SingleStepExact(min(tf, *m_T + currMaxTau));
                 if (m_VerboseTracing >= 2) {
                     REprintf("%f -- ", *m_T);
                     for (unsigned int i = 0;  i < m_NumStates;  ++i) {
@@ -1362,51 +1363,51 @@ extern "C" {
                         SEXP s_tlparams, SEXP s_fMaxtau,
                         SEXP s_reportTransitions) {
         try{
-        if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
-            error("invalid vector of initial values");
+        if (!Rf_isVector(s_x0)  ||  !(Rf_isReal(s_x0)  ||  Rf_isInteger(s_x0))) {
+            Rf_error("invalid vector of initial values");
         }
-        if (!isVectorList(s_nu)  &&
-            (!isMatrix(s_nu)  ||
-             INTEGER(getAttrib(s_nu, R_DimSymbol))[0] != length(s_x0))) {
-            error("invalid transition specification");
+        if (!Rf_isVectorList(s_nu)  &&
+            (!Rf_isMatrix(s_nu)  ||
+             INTEGER(Rf_getAttrib(s_nu, R_DimSymbol))[0] != Rf_length(s_x0))) {
+            Rf_error("invalid transition specification");
         }
-        if (!isFunction(s_f)) {
-            error("invalid rate function");
+        if (!Rf_isFunction(s_f)) {
+            Rf_error("invalid rate function");
         }
-        if (!isNull(s_fJacob)  &&  !isFunction(s_fJacob)) {
-            error("invalid Jacobian function");
+        if (!Rf_isNull(s_fJacob)  &&  !Rf_isFunction(s_fJacob)) {
+            Rf_error("invalid Jacobian function");
         }
-        if (!(isReal(s_tf)  ||  isInteger(s_tf))  ||  length(s_tf) != 1) {
-            error("invalid final time");
+        if (!(Rf_isReal(s_tf)  ||  Rf_isInteger(s_tf))  ||  Rf_length(s_tf) != 1) {
+            Rf_error("invalid final time");
         }
-        if (!isVector(s_changebound)  ||  !isReal(s_changebound)  ||
-            length(s_changebound) != length(s_x0)) {
-            error("invalid relratechange");
+        if (!Rf_isVector(s_changebound)  ||  !Rf_isReal(s_changebound)  ||
+            Rf_length(s_changebound) != Rf_length(s_x0)) {
+            Rf_error("invalid relratechange");
         }
-        if (!isNull(s_tlparams)  &&  !isVector(s_tlparams)) {
-            error("tl.params must be a list");
+        if (!Rf_isNull(s_tlparams)  &&  !Rf_isVector(s_tlparams)) {
+            Rf_error("tl.params must be a list");
         }
-        if (!isNull(s_fMaxtau)  &&  !isFunction(s_fMaxtau)) {
-            error("invalid maxTau function");
+        if (!Rf_isNull(s_fMaxtau)  &&  !Rf_isFunction(s_fMaxtau)) {
+            Rf_error("invalid maxTau function");
         }
-        if (isNull(s_reportTransitions)  ||  !isLogical(s_reportTransitions)) {
-            error("invalid value for reportTransitions");
+        if (Rf_isNull(s_reportTransitions)  ||  !Rf_isLogical(s_reportTransitions)) {
+            Rf_error("invalid value for reportTransitions");
         }
 
         CStochasticEqns eqns(s_x0, s_nu,
                              s_f, s_fJacob, s_params, REAL(s_changebound),
                              s_fMaxtau, s_deterministic, s_halting, s_reportTransitions);
-        if (!isNull(s_tlparams)) {
+        if (!Rf_isNull(s_tlparams)) {
             eqns.SetTLParams(s_tlparams);
         }
         try {
-            eqns.EvaluateATLUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+            eqns.EvaluateATLUntil(REAL(Rf_coerceVector(s_tf, REALSXP))[0]);
         } catch (CEarlyExit &e) {
-            warning("%s", e.what());
+            Rf_warning("%s", e.what());
         }
         return eqns.GetResult();
         } catch (exception &e) {
-            error("%s", e.what());
+            Rf_error("%s", e.what());
             return R_NilValue;
         }
     }
@@ -1416,35 +1417,35 @@ extern "C" {
     SEXP simExact(SEXP s_x0, SEXP s_nu, SEXP s_f, SEXP s_params, SEXP s_tf,
                   SEXP s_reportTransitions) {
         try {
-        if (!isVector(s_x0)  ||  !(isReal(s_x0)  ||  isInteger(s_x0))) {
-            error("invalid vector of initial values");
+        if (!Rf_isVector(s_x0)  ||  !(Rf_isReal(s_x0)  ||  Rf_isInteger(s_x0))) {
+            Rf_error("invalid vector of initial values");
         }
-        if (!isVectorList(s_nu)  &&
-            (!isMatrix(s_nu)  ||
-             INTEGER(getAttrib(s_nu, R_DimSymbol))[0] != length(s_x0))) {
-            error("invalid transition specification");
+        if (!Rf_isVectorList(s_nu)  &&
+            (!Rf_isMatrix(s_nu)  ||
+             INTEGER(Rf_getAttrib(s_nu, R_DimSymbol))[0] != Rf_length(s_x0))) {
+            Rf_error("invalid transition specification");
         }
-        if (!isFunction(s_f)) {
-            error("invalid rate function");
+        if (!Rf_isFunction(s_f)) {
+            Rf_error("invalid rate function");
         }
-        if (!(isReal(s_tf)  ||  isInteger(s_tf))  ||  length(s_tf) != 1) {
-            error("invalid final time");
+        if (!(Rf_isReal(s_tf)  ||  Rf_isInteger(s_tf))  ||  Rf_length(s_tf) != 1) {
+            Rf_error("invalid final time");
         }
-        if (isNull(s_reportTransitions)  ||  !isLogical(s_reportTransitions)) {
-            error("invalid value for reportTransitions");
+        if (Rf_isNull(s_reportTransitions)  ||  !Rf_isLogical(s_reportTransitions)) {
+            Rf_error("invalid value for reportTransitions");
         }
 
         CStochasticEqns eqns(s_x0, s_nu,
                              s_f, NULL, s_params, NULL, NULL,
                              R_NilValue, R_NilValue, s_reportTransitions);
         try {
-            eqns.EvaluateExactUntil(REAL(coerceVector(s_tf, REALSXP))[0]);
+            eqns.EvaluateExactUntil(REAL(Rf_coerceVector(s_tf, REALSXP))[0]);
         } catch (CEarlyExit &e) {
-            warning("%s", e.what());
+            Rf_warning("%s", e.what());
         }
         return eqns.GetResult();
         } catch (exception &e) {
-            error("%s", e.what());
+            Rf_error("%s", e.what());
             return R_NilValue;
         }
     }
