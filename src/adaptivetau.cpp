@@ -136,7 +136,7 @@ public:
                     }
                     if (m_VarNames != NULL) {
                         for (state = 0;  state < Rf_length(m_VarNames)  &&
-                                 strcmp(CHAR(STRING_PTR(m_VarNames)[state]),
+                                 strcmp(CHAR(STRING_PTR_RO(m_VarNames)[state]),
                                         stateStr) != 0;
                              ++state);
                     }
@@ -225,7 +225,7 @@ public:
                 (m_X[i] - Rf_ftrunc(m_X[i]) > 1e-5)) {
                 if (m_VarNames != NULL) {
                     throwError("initial value for variable " << i+1 <<
-                               " ('"<<CHAR(STRING_PTR(m_VarNames)[i])<<"') " <<
+                               " ('"<<CHAR(STRING_PTR_RO(m_VarNames)[i])<<"') " <<
                                "must be an integer (currently " << m_X[i] << ")");
                 } else {
                     throwError("initial value for variable " << i+1 <<
@@ -240,7 +240,7 @@ public:
         GetRNGstate();
     }
     ~CStochasticEqns(void) {
-        int cnt = 4;
+        int cnt = 3;
         if (m_RateJacobianFunc != NULL) {
             ++cnt;
         }
@@ -250,52 +250,55 @@ public:
         if (m_MaxTauFunc != NULL) {
             ++cnt;
         }
+        if (m_VarNames != NULL) {
+            ++cnt;
+        }
         UNPROTECT(cnt);
     }
     void SetTLParams(SEXP list) {
         SEXP names = PROTECT(Rf_getAttrib(list, R_NamesSymbol));
         try {
             for (int i = 0;  i < Rf_length(names);  ++i) {
-                if (strcmp("epsilon", CHAR(STRING_PTR(names)[i])) == 0) {
+                if (strcmp("epsilon", CHAR(STRING_PTR_RO(names)[i])) == 0) {
                     if (!Rf_isReal(VECTOR_ELT(list, i))  ||
                         Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
-                                   CHAR(STRING_PTR(names)[i]) << "'");
+                                   CHAR(STRING_PTR_RO(names)[i]) << "'");
                     }
                     m_Epsilon = REAL(VECTOR_ELT(list, i))[0];
-                } else if (strcmp("delta", CHAR(STRING_PTR(names)[i])) == 0) {
+                } else if (strcmp("delta", CHAR(STRING_PTR_RO(names)[i])) == 0) {
                     if (!Rf_isReal(VECTOR_ELT(list, i))  ||
                         Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
-                                   CHAR(STRING_PTR(names)[i]) << "'");
+                                   CHAR(STRING_PTR_RO(names)[i]) << "'");
                     }
                     m_Delta = REAL(VECTOR_ELT(list, i))[0];
-                } else if (strcmp("maxtau", CHAR(STRING_PTR(names)[i])) == 0) {
+                } else if (strcmp("maxtau", CHAR(STRING_PTR_RO(names)[i])) == 0) {
                     if (!Rf_isReal(VECTOR_ELT(list, i))  ||
                         Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
-                                   CHAR(STRING_PTR(names)[i]) << "'");
+                                   CHAR(STRING_PTR_RO(names)[i]) << "'");
                     }
                     m_MaxTau = REAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("extraChecks",
-                                  CHAR(STRING_PTR(names)[i])) == 0) {
+                                  CHAR(STRING_PTR_RO(names)[i])) == 0) {
                     if (!Rf_isLogical(VECTOR_ELT(list, i))  ||
                         Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
-                                   CHAR(STRING_PTR(names)[i]) << "'");
+                                   CHAR(STRING_PTR_RO(names)[i]) << "'");
                     }
                     m_ExtraChecks = LOGICAL(VECTOR_ELT(list, i))[0];
                 } else if (strcmp("verbose",
-                                  CHAR(STRING_PTR(names)[i])) == 0) {
+                                  CHAR(STRING_PTR_RO(names)[i])) == 0) {
                     if (!Rf_isInteger(VECTOR_ELT(list, i))  ||
                         Rf_length(VECTOR_ELT(list, i)) != 1) {
                         throwError("invalid value for parameter '" <<
-                                   CHAR(STRING_PTR(names)[i]) << "'");
+                                   CHAR(STRING_PTR_RO(names)[i]) << "'");
                     }
                     m_VerboseTracing = INTEGER(VECTOR_ELT(list, i))[0];
                 } else {
                     Rf_warning("ignoring unknown parameter '%s'",
-                            CHAR(STRING_PTR(names)[i]));
+                            CHAR(STRING_PTR_RO(names)[i]));
                 }
             }
         } catch (...) {
@@ -372,9 +375,9 @@ public:
             PROTECT(res);
             res.SetSEXP(0, PROTECT(GetTimeSeriesSEXP()), "dynamics");
             CRVector<int> lastTrans(1);
-            lastTrans[0] = (m_LastTransition < 0  ||
-                            m_TransCats[m_LastTransition] != eHalting) ?
-                NA_INTEGER : m_LastTransition+1;
+            lastTrans.Set(0, (m_LastTransition < 0  ||
+                              m_TransCats[m_LastTransition] != eHalting) ?
+                          NA_INTEGER : m_LastTransition+1);
             res.SetSEXP(1, lastTrans, "haltingTransition");
             if (m_RecordTransitionTimeSeries) {
                 res.SetSEXP(2, PROTECT(GetTransitionTimeSeriesSEXP()), "transitions");
@@ -404,7 +407,7 @@ public:
         for (unsigned int i = 0;  i < m_NumStates;  ++i) {
             if (m_VarNames  &&  (unsigned int)Rf_length(m_VarNames) > i) {
                 SET_VECTOR_ELT(colnames, i+1,
-                               STRING_PTR(m_VarNames)[i]);
+                               STRING_PTR_RO(m_VarNames)[i]);
             } else {
                 ostringstream oss;
                 oss << "x" << i+1;

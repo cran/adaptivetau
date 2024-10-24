@@ -1,4 +1,11 @@
 ----------------------------
+Version 2.3-2 - 24 Oct 2024
+----------------------------
+  - fix PROTECT stack imbalance caused if variable names are not
+    provided (thanks to Nicholas Davies for identifying; github issue #1).
+  - update to use latest R API to eliminate CRAN NOTEs.
+
+----------------------------
 Version 2.3-1 - 17 Apr 2024
 ----------------------------
   - previously, the maxtau argument only constrained tau-leaping

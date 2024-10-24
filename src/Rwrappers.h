@@ -30,12 +30,15 @@
 // "real" in the C code.
 template<typename Tlogic, typename Timpl = Tlogic> class CRVectorBase {
 protected:
-    //data must correspond to SEXP!
-    CRVectorBase(SEXP v, Timpl* fconverter (SEXP x)) {
+    typedef Timpl (*TGetter) (SEXP, R_xlen_t);
+    typedef void (*TSetter) (SEXP, R_xlen_t, Timpl);
+
+    CRVectorBase(SEXP v, TGetter getter, TSetter setter) {
         PROTECT(v);
         m_N = Rf_length(v);
-        m_Data = fconverter(v);
         m_Sexp = v;
+        m_Getter = getter;
+        m_Setter = setter;
         UNPROTECT(1);
     }
 public:
@@ -63,20 +66,11 @@ public:
     }
     const Timpl operator[] (int i) const {
         if (i >= m_N) { Rf_error("CRVector[] out of bounds"); }
-        return m_Data[i];
+        return m_Getter(m_Sexp, i);
     }
 
     // setters
-    void SetAll(const Timpl& value) {//FIXME -- maybe not void?
-        for (unsigned int i = 0;  i < size();  ++i) {
-            m_Data[i] = value;
-        }
-    }
-    Timpl& operator[] (int i) {
-        if (i >= m_N) { Rf_error("CRVector[] out of bounds"); }
-        return m_Data[i];
-    }
-    Timpl* data(void) { return m_Data; } //speedy but requires caution!
+    void Set(int i, const Timpl &v) { m_Setter(m_Sexp, i, v); }
     const char* GetName(int i) const {
         if (i >= m_N) { Rf_error("CRVector::GetName out of bounds"); }
         SEXP names = Rf_getAttrib(m_Sexp, R_NamesSymbol);
@@ -97,36 +91,40 @@ public:
     operator SEXP() { return m_Sexp; }
 protected:
     SEXP m_Sexp;
-    Timpl *m_Data;
+    TGetter m_Getter;
+    TSetter m_Setter;
     int m_N;
 };
 
 template <typename T> class CRVector {};
 template<> class CRVector<double> : public CRVectorBase<double> {
 public:
-    CRVector(SEXP p) : CRVectorBase<double>(p, REAL) {}
+    CRVector(SEXP p) : CRVectorBase<double>(p, REAL_ELT, SET_REAL_ELT) {}
     CRVector(int n) :
-        CRVectorBase<double>(Rf_allocVector(REALSXP, n), REAL) {}
+        CRVectorBase<double>(Rf_allocVector(REALSXP, n),
+                             REAL_ELT, SET_REAL_ELT) {}
 };
 template<> class CRVector<int> : public CRVectorBase<int> {
 public:
-    CRVector(SEXP p) : CRVectorBase<int>(p, INTEGER) {}
+    CRVector(SEXP p) : CRVectorBase<int>(p, INTEGER_ELT, SET_INTEGER_ELT) {}
     CRVector(int n) :
-        CRVectorBase<int>(Rf_allocVector(INTSXP, n), INTEGER) {}
+        CRVectorBase<int>(Rf_allocVector(INTSXP, n),
+                          INTEGER_ELT, SET_INTEGER_ELT) {}
 };
 template<> class CRVector<bool> : public CRVectorBase<bool,int> {
 public:
     CRVector(SEXP p) :
-        CRVectorBase<bool,int>(p, LOGICAL) {}
+        CRVectorBase<bool,int>(p, LOGICAL_ELT, SET_LOGICAL_ELT) {}
     CRVector(int n) :
-        CRVectorBase<bool,int>(Rf_allocVector(LGLSXP, n), LOGICAL) {}
+        CRVectorBase<bool,int>(Rf_allocVector(LGLSXP, n),
+                               LOGICAL_ELT, SET_LOGICAL_ELT) {}
 };
 template<> class CRVector<const char*> : public CRVectorBase<SEXP> {
 public:
     CRVector(SEXP p) :
-        CRVectorBase<SEXP>(p, STRING_PTR) {}
+        CRVectorBase<SEXP>(p, STRING_ELT, SET_STRING_ELT) {}
     CRVector(int n) :
-        CRVectorBase<SEXP>(Rf_allocVector(STRSXP, n), STRING_PTR) {}
+        CRVectorBase<SEXP>(Rf_allocVector(STRSXP, n), STRING_ELT, SET_STRING_ELT) {}
     const char* operator[] (int i) const {
         if (i >= m_N) { Rf_error("CRVector[] out of bounds"); }
         return CHAR(STRING_ELT(m_Sexp, i));
